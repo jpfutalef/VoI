@@ -30,7 +30,8 @@ eng = matlab.engine.start_matlab('-desktop')
 # eng = matlab.engine.connect_matlab(eng_names[0])
 
 # %% The table of results
-data = pd.read_csv('data/numerical-voi/iptlc/voi-results.csv', index_col=0, header=[0, 1]).T
+# data = pd.read_csv('data/numerical-voi/iptlc/voi-results.csv', index_col=0, header=[0, 1]).T
+data = pd.read_clipboard(index_col=0, header=0)
 
 # %% filter by "losses"
 data = data.loc[data.index.get_level_values(0) == 'losses', :]

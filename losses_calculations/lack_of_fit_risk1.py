@@ -1,3 +1,10 @@
+"""
+Computation of the lack of fit considering the state variables necessary for calculation of the following risk metric:
+    METRIC: Lack of fit
+
+Author: Juan-Pablo Futalef
+"""
+
 import os
 from losses_calculations.setup_vars import *
 from greyboxmodels.metrics import lack_of_fit as metric
@@ -7,9 +14,13 @@ target_dir = setup_dir(metric)
 reference_dir = Path(os.environ["VOI_ROOT"]) / "data/simulation_references/iptlc/MonteCarlo/2024-05-09_15-16-30/"
 
 
+#%% open plant
+
+
 # %% The state filter
 def state_filter(i_x):
     # Returns true if the state is to be dropped (filters out the state)
+    # TODO choose the states to be filtered here
     if i_x > 79:
         # In the power grid, the first 80 states are the continuous states.
         # The rest are the discrete states and the variables from other devices.

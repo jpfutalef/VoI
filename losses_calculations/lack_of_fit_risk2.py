@@ -1,3 +1,10 @@
+"""
+Computation of the lack of fit considering the state variables necessary for calculation of the following risk metric:
+    METRIC: Lack of fit
+
+Author: Juan-Pablo Futalef
+"""
+
 import os
 from losses_calculations.setup_vars import *
 from greyboxmodels.metrics import lack_of_fit as metric
@@ -25,11 +32,12 @@ table, info = metric.folders_comparison(folders,
                                         state_filter=state_filter,
                                         )
 
-#%% Some figures
+# %% Some figures
 import matplotlib.pyplot as plt
 import dill as pickle
 import numpy as np
 import matplotlib as mpl
+
 mpl.use('TkAgg')
 
 info_loc = "data/voi_losses/lack_of_fit/2024-05-09_15-16-30/lack_of_fit_info.pkl"
@@ -37,13 +45,13 @@ info_loc = "data/voi_losses/lack_of_fit/2024-05-09_15-16-30/lack_of_fit_info.pkl
 with open(info_loc, "rb") as f:
     info = pickle.load(f)
 
-#%% Get target values
+# %% Get target values
 model = 0
 l = list(info.keys())
 d = info[l[model]]["detailed_info"]
 n_states = len(d)
 
-#%% Create the figure
+# %% Create the figure
 plt.close("all")
 
 # Compute a nice number of rows and columns
