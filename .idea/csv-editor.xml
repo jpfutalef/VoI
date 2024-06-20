@@ -38,6 +38,13 @@
             </Attribute>
           </value>
         </entry>
+        <entry key="\data\voi_losses\lack_of_fit\2024-05-09_15-16-30\risk_metric_1\lack_of_fit.csv">
+          <value>
+            <Attribute>
+              <option name="separator" value="," />
+            </Attribute>
+          </value>
+        </entry>
       </map>
     </option>
   </component>
