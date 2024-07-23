@@ -26,9 +26,9 @@ plant: IPandTLC = Plant.load(plant_dir)
 def state_filter(i_x):
     import numpy as np
     # Only power demands in the state
-    pg_idx = plant.power_grid.state_idx.Pg
-    qg_idx = plant.power_grid.state_idx.Qg
-    target_idx = np.concatenate([pg_idx, qg_idx])
+    pd_idx = plant.power_grid.state_idx.Pd
+    qd_idx = plant.power_grid.state_idx.Qd
+    target_idx = np.concatenate([pd_idx, qd_idx])
 
     if i_x not in target_idx:
         return True
