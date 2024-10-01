@@ -1,5 +1,5 @@
 """
-A module that can read datasets of simulations and output new ones with contaminated data.
+A module that can read datasets_development of simulations and output new ones with contaminated data.
 
 Author: Juan-Pablo Futalef
 """
