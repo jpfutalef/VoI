@@ -15,7 +15,6 @@ gbm7 = Path("/mnt/d/projects/IPTLC_BBMs/data/gbm-simulations/iptlc/arch_7-1_1_1/
 folders = [wbm, gbm1, gbm2, gbm3, gbm4, gbm5, gbm6, gbm7]
 names = ["WBM" if i == 0 else f"GBM{i}" for i, _ in enumerate(folders)]
 
-
 # %% Function to setup the path
 def setup_dir(module, subdirectory=None):
     import os

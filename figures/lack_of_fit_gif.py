@@ -8,7 +8,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import imageio
 import tqdm
-import multiprocessing as mp
 
 target_file = "data/voi_losses/lack_of_fit/2024-05-09_15-16-30/GBM1_values.pkl"
 reference_file = "data/voi_losses/lack_of_fit/2024-05-09_15-16-30/reference_values.pkl"
@@ -27,7 +26,7 @@ target_values = data[state_idx]
 reference_values = reference_data[state_idx]
 
 #%% ks statistic
-import greyboxmodels.metrics.lack_of_fit as lof
+import greyboxmodels.voi.metrics.lack_of_fit as lof
 
 ks_data = {}
 for tk, ref_val_array in reference_values.items():

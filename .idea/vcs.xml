@@ -2,8 +2,5 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../CPS-SenarioGeneration" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../Hierarchical_CPS_models" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/../IPTLC_BBMs" vcs="Git" />
   </component>
 </project>

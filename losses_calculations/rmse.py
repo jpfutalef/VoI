@@ -1,6 +1,6 @@
 import os
 from losses_calculations.setup_vars import *
-from greyboxmodels.metrics import rmse as metric
+from greyboxmodels.voi.metrics import rmse as metric
 
 # %% Create a folder to store the values
 target_dir = setup_dir(metric)
