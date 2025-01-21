@@ -11,17 +11,22 @@ import matplotlib.pyplot as plt
 import json
 
 
+
 def ks_statistic(data, data_ref, n_bins=50):
     """
     Compute the Kolmogorov-Smirnov statistic between two empirical cumulative distribution functions.
-
+    For this, we first compute the empirical probability density functions of the datasets and then the empirical
+    cumulative distribution functions.
+    :param data: the data to compare
+    :param data_ref: the reference data
+    :param n_bins: the number of bins to use
     """
 
     # Check if the array contains the same values
     n_min = min(len(data), len(data_ref))
     comparison = sum(np.equal(data[:n_min], data_ref[:n_min]))
     if comparison == n_min:
-        return 0., {"location": data[0],
+        return 0., {"ks_location": data[0],
                    "ks_value": 0,
                    "bins": np.nan,
                    "epdf1": np.nan,
@@ -33,29 +38,30 @@ def ks_statistic(data, data_ref, n_bins=50):
 
     # Generate empirical PDF
     bins = np.linspace(min(data.min(), data_ref.min()), max(data.max(), data_ref.max()), n_bins)
-    epdf1, _ = np.histogram(data, bins=bins, density=True)
+    epdf, _ = np.histogram(data, bins=bins, density=True)
     epdf_ref, _ = np.histogram(data_ref, bins=bins, density=True)
 
     # Compute the empirical CDF
-    ecdf_1 = empirical_cdf(bins, epdf1)
-    ecdf_2 = empirical_cdf(bins, epdf_ref)
+    ecdf = empirical_cdf(bins, epdf)
+    ecdf_ref = empirical_cdf(bins, epdf_ref)
 
     # Compute the absolute difference
-    abs_dff = np.abs(ecdf_1 - ecdf_2)
+    abs_dff = np.abs(ecdf - ecdf_ref)
 
     # get max and the value where it happens
     ks_value = np.max(abs_dff)
     max_diff_idx = np.argmax(abs_dff)
-    location = ecdf_1[max_diff_idx]
+    ks_location = bins[max_diff_idx]
 
     # Store information
-    info = {"location": location,
+    info = {"ks_location": ks_location,
             "ks_value": ks_value,
+            "ecdf_at_ks": ecdf_ref[max_diff_idx],
             "bins": bins,
-            "epdf1": epdf1,
+            "epdf": epdf,
             "epdf_ref": epdf_ref,
-            "ecdf1": ecdf_1,
-            "ecdf_ref": ecdf_2,
+            "ecdf": ecdf,
+            "ecdf_ref": ecdf_ref,
             "abs_diff": abs_dff,
             }
 
