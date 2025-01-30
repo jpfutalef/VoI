@@ -56,7 +56,7 @@ def ks_statistic(data, data_ref, n_bins=50):
     # Store information
     info = {"ks_location": ks_location,
             "ks_value": ks_value,
-            "ecdf_at_ks": ecdf_ref[max_diff_idx],
+            "ecdf_at_ks": min(ecdf_ref[max_diff_idx], ecdf[max_diff_idx]),
             "bins": bins,
             "epdf": epdf,
             "epdf_ref": epdf_ref,

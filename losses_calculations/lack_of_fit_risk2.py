@@ -15,8 +15,8 @@ reference_dir = Path(os.environ["VOI_ROOT"]) / "data/simulation_references/iptlc
 
 
 #%% open plant
-from greyboxmodels.cpsmodels.Plant import Plant
-from greyboxmodels.cpsmodels.cyberphysical.IPTLC.IPTLC import IPandTLC
+from greyboxmodels.modelbuild.Plant import Plant
+from greyboxmodels.models.cyberphysical.IPTLC.IPTLC import IPandTLC
 
 plant_dir = Path(os.environ["MODELS_ROOT"]) / "data/wbm-models/iptlc_ieee14-deterministic_tlcn7_wbm.pkl"
 plant: IPandTLC = Plant.load(plant_dir)
