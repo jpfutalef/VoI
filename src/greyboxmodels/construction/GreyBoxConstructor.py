@@ -7,7 +7,7 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from greyboxmodels.construction.GreyBoxRepository import GreyBoxRepository
-from greyboxmodels.construction import VoI
+from greyboxmodels.modelbuild import Input
 
 @dataclass
 class ConstructorParameters:
@@ -17,7 +17,8 @@ class ConstructorParameters:
     optimizer: object
 
 class Dataset:
-    def __init__(self, data):
+    def __init__(self,
+                 data):
         self.data = data
 
     @classmethod
@@ -32,15 +33,22 @@ class Dataset:
 
 
 class GreyBoxModelConstructor:
-    def __init__(self, model, data, voi, optimizer):
-        self.model = model
-        self.data = data
-        self.voi = voi
-        self.optimizer = optimizer
-        self.current_model = None
-        self.current_voi = None
-        self.current_data = None
-        self.current_score = None
+    def __init__(self,
+                 model_repository: GreyBoxRepository,
+                 gt_data: Dataset,
+                 params: ConstructorParameters,
+                 ):
+        """
+        This constructor enables the iterative selection of the best model from a repository of models
+        and a dataset of ground truth data. The selection is guided by the Value of Information (VoI) metric.
+
+        :param model_repository: A repository of grey-box models
+        :param gt_data: Ground truth data
+        :param params: Constructor parameters
+        """
+        self.repository = model_repository
+        self.gt_data = gt_data
+        self._params = params
 
     def construct(self):
         self.current_model = self.model
