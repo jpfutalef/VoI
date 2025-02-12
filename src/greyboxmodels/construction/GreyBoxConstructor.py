@@ -7,35 +7,19 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from greyboxmodels.construction.GreyBoxRepository import GreyBoxRepository
+from greyboxmodels.construction.GroundTruth import GroundTruthDataset
 from greyboxmodels.modelbuild import Input
+
 
 @dataclass
 class ConstructorParameters:
-    model: object
-    data: object
-    voi: object
-    optimizer: object
-
-class Dataset:
-    def __init__(self,
-                 data):
-        self.data = data
-
-    @classmethod
-    def load(cls, data):
-        return
-
-    def __getitem__(self, key):
-        return self.data[key]
-
-    def __len__(self):
-        return len(self.data)
+    batch_size: int = 5
 
 
 class GreyBoxModelConstructor:
     def __init__(self,
                  model_repository: GreyBoxRepository,
-                 gt_data: Dataset,
+                 gt_data: GroundTruthDataset,
                  params: ConstructorParameters,
                  ):
         """

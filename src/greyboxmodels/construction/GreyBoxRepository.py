@@ -9,6 +9,7 @@ from itertools import product
 
 from greyboxmodels.modelbuild import Plant
 
+
 class GreyBoxRepository:
     def __init__(self,
                  reference_plant: Plant.HierarchicalPlant,
@@ -31,7 +32,8 @@ class GreyBoxRepository:
 
         """
         # Check if the number of plants in the reference model is equal to the number of plants in the BBM.
-        assert len(reference_plant.plants) == len(bbm_plants), "Number of plants in the reference model must be equal to the number of plants in the BBM."
+        assert len(reference_plant.plants) == len(
+            bbm_plants), "Number of plants in the reference model must be equal to the number of plants in the BBM."
 
         # This plant inherits the properties of the reference plant.
         self.reference_plant = reference_plant
@@ -61,8 +63,8 @@ class GreyBoxRepository:
                     gbm.plants[idx] = self.bbm_plants[idx]
 
             # Store the model using the substitution plan as the key
-            repo[tuple(plan)] = gbm # Convert list to tuple to use as key
-            performance[tuple(plan)] = {} # Initialize performance dictionary
+            repo[tuple(plan)] = gbm  # Convert list to tuple to use as key
+            performance[tuple(plan)] = {}  # Initialize performance dictionary
 
         return repo, performance
 
