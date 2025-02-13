@@ -5,10 +5,12 @@ Author: Juan-Pablo Futalef
 """
 #%%
 import copy
+import random
 from pathlib import Path
 from dataclasses import dataclass
 import numpy as np
 import tqdm
+from typing import List, Tuple
 
 from greyboxmodels.construction.GreyBoxRepository import GreyBoxRepository
 from greyboxmodels.construction.GroundTruth import GroundTruthDataset
@@ -16,86 +18,10 @@ from greyboxmodels.modelbuild import Input
 from greyboxmodels.simulation import Simulator
 
 
-class BayesianNormalEstimator:
-    """
-    A Bayesian estimator for tracking the mean and standard deviation of normally distributed variables.
-
-    This class uses Bayesian updates to refine estimates of a normal distribution's parameters (mean & std deviation)
-    based on new independent and identically distributed (IID) normal observations.
-
-    Attributes:
-    - mu (np.ndarray): Estimated mean(s) of the normal distribution.
-    - sigma (np.ndarray): Estimated standard deviation(s).
-    - mu_history (list): Stores evolution of mean estimates over updates.
-    - sigma_history (list): Stores evolution of standard deviation estimates.
-    """
-
-    def __init__(self, mu_prior, sigma_prior):
-        """
-        Initializes the Bayesian normal estimator with prior mean and standard deviation.
-
-        :param mu_prior: Prior mean (scalar or array for multiple variables).
-        :param sigma_prior: Prior standard deviation (same shape as mu_prior).
-        """
-        self.mu = np.array(mu_prior, dtype=np.float64)  # Convert to NumPy array
-        self.sigma = np.array(sigma_prior, dtype=np.float64)  # Convert to NumPy array
-
-        # Track history for visualization
-        self.mu_history = [self.mu.copy()]
-        self.sigma_history = [self.sigma.copy()]
-
-    def update(self, observations):
-        """
-        Performs a Bayesian update on the mean and standard deviation based on new observations.
-
-        :param observations: A batch of normally distributed observations.
-                             Should be a list of lists if tracking multiple variables.
-        """
-        observations = np.array(observations, dtype=np.float64)  # Convert input to NumPy array
-        m = observations.shape[0]  # Number of new samples
-
-        if m == 0:
-            return  # No update if no new data
-
-        # Compute sample mean and standard deviation from the new observations
-        mu_Y = np.mean(observations, axis=0)  # Mean per variable
-        sigma_Y = np.std(observations, axis=0, ddof=1)  # Std deviation per variable
-
-        # Prior variance and sample variance
-        sigma_prior_sq = self.sigma ** 2
-        sigma_Y_sq = sigma_Y ** 2
-
-        # Bayesian update formulas
-        mu_new = (sigma_prior_sq * mu_Y + m * sigma_Y_sq * self.mu) / (m * sigma_Y_sq + sigma_prior_sq)
-        sigma_new = np.sqrt((sigma_prior_sq * sigma_Y_sq) / (m * sigma_Y_sq + sigma_prior_sq))
-
-        # Update estimates
-        self.mu = mu_new
-        self.sigma = sigma_new
-
-        # Store history
-        self.mu_history.append(self.mu.copy())
-        self.sigma_history.append(self.sigma.copy())
-
-    def get_distribution(self):
-        """
-        Returns the current mean and standard deviation estimates.
-        """
-        return self.mu, self.sigma
-
-    def get_history(self):
-        """
-        Returns the history of mean and standard deviation estimates over time.
-        """
-        return np.array(self.mu_history), np.array(self.sigma_history)
-
-
 class GreyBoxModelConstructor:
     def __init__(self,
                  model_repository: GreyBoxRepository,
                  gt_data: GroundTruthDataset,
-                 prior_computational_burden: BayesianNormalEstimator,
-                 prior_fidelity: BayesianNormalEstimator,
                  gt_batch_size: int = 5,
                  ):
         """
@@ -109,16 +35,12 @@ class GreyBoxModelConstructor:
         self.repository = model_repository
         self.gt_data = copy.deepcopy(gt_data)
         self.gt_batch_size = gt_batch_size
+
+        # Elements to be used during the optimization process
         self._best_substitution_plan = None
         self._simulator = Simulator.Simulator()
-
-        # Bayesian estimators for each substitution plan
-        self.computational_burden_estimators = {}
-        self.fidelity_estimators = {}
-
-        for plan in self.repository.model_repository.keys():
-            self.computational_burden_estimators[plan] = BayesianNormalEstimator(mu_prior=10, sigma_prior=5)
-            self.fidelity_estimators[plan] = BayesianNormalEstimator(mu_prior=0.5, sigma_prior=0.2)
+        self._const_current_plan = None
+        self.substitution_plans = list(self.repository.model_repository.keys())
 
     def construct(self,
                   ):
@@ -130,27 +52,11 @@ class GreyBoxModelConstructor:
         self._best_substitution_plan = best_plan  # Store the best plan
         return best_plan, history
 
-    def substitution_plan_list(self):
-        return [k for k, _ in self.repository.model_repository.items()]
-
     def get_best_model(self):
         """
         Returns the best model based on the performance criteria.
         """
-        best_plan = None
-        best_score = float("inf")
-
-        for plan in self.repository.keys():
-            mean_exec_time, _ = self.computational_burden_estimators[plan].get_distribution()
-            mean_fidelity, _ = self.fidelity_estimators[plan].get_distribution()
-
-            score = mean_exec_time + mean_fidelity  # Lower is better
-
-            if score < best_score:
-                best_score = score
-                best_plan = plan
-
-        return best_plan
+        return
 
     def get_history(self):
         """
@@ -172,13 +78,9 @@ class GreyBoxModelConstructor:
         # Get the batches
         batches = self.gt_data.get_batches(self.gt_batch_size)
 
-        # Get substitution plans
-        s_list = self.substitution_plan_list()
-
-        # Select randomly the first substitution plan, ensuring it contains at least one `1`
-        while current_s := np.random.choice(s_list):
-            if 1 in current_s:
-                break
+        # Select a first substitution plan, the heuristic knows how to do it
+        current_s = (0, 1, 1)
+        # current_s = self._next_substitution_plan_heuristic()
 
         # Iterate through all batches
         for batch in tqdm.tqdm(batches):
@@ -186,26 +88,30 @@ class GreyBoxModelConstructor:
             simulated_data_batch = self._opt_simulate_batch(current_s, batch)
 
             # Update estimators
-            self._opt_update(current_s, simulated_data_batch)  # Every update stores history
+            self.repository.update_performance(current_s, simulated_data_batch)  # Every update stores history
 
-            # Compute VoI for all substitution plans
-            voi_values = self._opt_compute_voi(s_list)
-
-            # Select the next plan based on VoI
-            current_s = self._next_substitution_plan_heuristic(voi_values)
+            # Select the next plan to simulate
+            current_s = self._next_substitution_plan_heuristic()
 
         # Select the final best model
         best_plan = self.get_best_model()
         history = self.get_history()
         return best_plan, history
 
-    def _next_substitution_plan_heuristic(self, voi_values):
+    def _next_substitution_plan_heuristic(self):
         """
-        Selects the next substitution plan based on the computed VoI values.
-        This should implement a heuristic such as greedy selection, epsilon-greedy, or Thompson Sampling.
+        The heuristic uses VoI to select the next substitution plant in the iteration
         """
-        # Example: Greedy selection (always picks the plan with highest VoI)
-        return max(voi_values, key=voi_values.get)
+        # Check start
+        if self._best_substitution_plan is None:
+            valid_S = [S for S in self.substitution_plans if any(S)]
+            S = random.choice(valid_S)
+            return S
+
+        # From the repository, use the meand and std to compute the relative error
+        # Then, use the relative error to compute the VoI
+        # Finally, select the plan with the highest VoI
+        pass
 
     def _opt_simulate_batch(self,
                             substitution_plan,
@@ -216,20 +122,24 @@ class GreyBoxModelConstructor:
         """
         # Get the model
         gbm = self.repository.get_model(substitution_plan)
+        gbm.stochastic = False  # Disable stochasticity always
 
         # Simulate
-        params = Simulator.SimulationParameters(initial_time=batch["initial_time"],
-                                                mission_time=batch["mission_time"],
-                                                time_step=batch["time_step"],
-                                                initial_state=batch["initial_state"],
-                                                external_stimuli=batch["external_stimuli"],
-                                                forced_states=batch["forced_states"],
-                                                )
-        self._simulator.params = params
-        self._simulator.plant = gbm
-        sim_data = self._simulator.simulate()
+        results = []
+        for scenario in batch:
+            params = Simulator.SimulationParameters(initial_time=scenario["initial_time"],
+                                                    mission_time=scenario["mission_time"],
+                                                    time_step=scenario["time_step"],
+                                                    initial_state=scenario["initial_state"],
+                                                    external_stimuli=scenario["external_stimuli"],
+                                                    forced_states=scenario["forced_states"],
+                                                    )
+            self._simulator.params = params
+            self._simulator.plant = gbm
+            sim_data = self._simulator.simulate()
+            results.append(sim_data)
 
-        return sim_data
+        return results
 
     def _opt_update(self, substitution_plan, simulated_data_batch):
         """

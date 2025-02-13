@@ -4,6 +4,7 @@ The dataset is supposed to exclusively be used for the construction of grey-box 
 
 Author: Juan-Pablo Futalef
 """
+from pathlib import Path
 from typing import List
 import dill as pickle
 import random
@@ -172,3 +173,30 @@ class GroundTruthDataset:
             batches.append(batch)
 
         return batches
+
+
+"""
+UTILITY FUNCTIONS
+"""
+
+
+def load(path,
+         process_if_not_found=False
+         ):
+    path = Path(path)
+
+    try:
+        gt_data = GroundTruthDataset.load(path)
+    except FileNotFoundError:   # TODO verify integrity when handling this exception, what if the files in folder are not correct?
+        if not process_if_not_found:
+            m = f"Ground truth not found at: {path}\n   (process_if_not_found={process_if_not_found})"
+            raise FileNotFoundError(m)
+        gt_data = GroundTruthDataset.from_folder(path.parent, parallel=True)
+        save(gt_data, path)
+
+    return gt_data
+
+
+def save(gt_data, path):
+    with open(path, "wb") as f:
+        pickle.dump(gt_data, f)
