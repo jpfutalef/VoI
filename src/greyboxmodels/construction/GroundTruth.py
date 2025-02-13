@@ -39,8 +39,12 @@ def process_scenario(scenario):
     x = Input.Input(pd.DataFrame(x, index=t))
 
     # Return the relevant data
-    return {"external_stimuli": e,
-            "state_variables": x,
+    return {"initial_time": t0,
+            "mission_time": scenario["mission_time"],
+            "time_step": t[1] - t[0],
+            "initial_state": x0,
+            "external_stimuli": e,
+            "forced_states": x,
             }
 
 
@@ -48,6 +52,7 @@ def load_process_simulation_file(path):
     sim_data = Simulator.load_simulation_data(path)
     s = process_scenario(sim_data)
     return s
+
 
 def process_scenarios(scenario_list):
     """
@@ -76,7 +81,6 @@ class GroundTruthDataset:
             """
         # Process the scenarios
         self.scenarios = process_scenarios(scenario_list) if process_data else scenario_list
-
 
     @classmethod
     def load(cls, path):
@@ -115,7 +119,8 @@ class GroundTruthDataset:
         with mp.Pool(n_processes) as pool:
             with tqdm.tqdm(total=len(path_list), desc="Loading datasets") as pbar:
                 # Use apply_async to allow progress bar updates
-                results = [pool.apply_async(load_process_simulation_file, args=(path,), callback=update_progress) for path in path_list]
+                results = [pool.apply_async(load_process_simulation_file, args=(path,), callback=update_progress) for
+                           path in path_list]
 
                 # Collect results once all processes are done
                 scenarios = [r.get() for r in results]  # Ensures tasks complete before returning
@@ -154,3 +159,16 @@ class GroundTruthDataset:
         extracted_scenarios = [self.scenarios.pop(0) for _ in range(n)]
 
         return extracted_scenarios
+
+    def get_batches(self, n=1):
+        """
+        Extracts n scenarios from the dataset and returns the processed data for the simulation
+        :param n: Number of scenarios to extract
+        :return: A list of dictionaries, each containing the processed data for the simulation
+        """
+        batches = []
+        while len(self.scenarios) > 0:
+            batch = self.extract(n)
+            batches.append(batch)
+
+        return batches

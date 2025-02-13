@@ -83,3 +83,9 @@ class GreyBoxRepository:
             The Grey-Box Model based on the substitution plan.
         """
         return self.model_repository[plan]
+
+    def __len__(self):
+        return len(self.model_repository)
+
+    def num_of_plants(self):
+        return len(self.reference_plant.plants)
