@@ -153,7 +153,7 @@ class GroundTruthDataset:
         :return: A list of dictionaries, each containing the processed data for the simulation
         """
         # If n is greater than the number of scenarios, return all the scenarios
-        n = min(n, len(self.scenarios))
+        n = min(n, len(self.scenarios)) if n is not None else len(self.scenarios)
 
         # Shuffle and pop n scenarios
         random.shuffle(self.scenarios)

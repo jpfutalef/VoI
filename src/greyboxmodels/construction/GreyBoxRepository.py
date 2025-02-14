@@ -168,8 +168,40 @@ class GreyBoxRepository:
     def num_of_plants(self):
         return len(self.reference_plant.plants)
 
-    def update_performance(self, s, sim_data):
+    def update_performance(self,
+                           s,
+                           sim_data):
         """
         Update the computational burden and fidelity performance metrics for a substitution plan.
+
+        :param s: Substitution plan.
+        :param sim_data: Dictionary with simulation data
         """
-        self.model_performance[s].update(sim_data)
+        self.model_performance[s]["computational_burden"].update(sim_data)
+        self.model_performance[s]["fidelity"].update(sim_data)
+
+
+"""
+UTILITY FUNCTIONS
+"""
+
+
+def computational_load(sim_data):
+    """
+    Computes the computational load of a simulation data dictionary.
+
+    :param sim_data: Dictionary with simulation data.
+    :return: The computational load of the simulation.
+    """
+    return 1  # Placeholder for now
+
+
+def lack_of_fit(ref_sim_data, sim_data):
+    """
+    Computes the lack of fit between two simulation data dictionaries.
+
+    :param ref_sim_data: Reference simulation data dictionary.
+    :param sim_data: Simulation data dictionary.
+    :return: The lack of fit between the two simulations.
+    """
+    return 1  # Placeholder for now
