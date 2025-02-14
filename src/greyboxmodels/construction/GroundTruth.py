@@ -39,13 +39,25 @@ def process_scenario(scenario):
     t = np.hstack([t0, t])
     x = Input.Input(pd.DataFrame(x, index=t))
 
+    # Other stuff
+    t = scenario["time"]
+    exec_time = scenario["execution_time_array"]
+    init_exec_time = scenario["initial_execution_time"]
+    end_exec_time = scenario["end_execution_time"]
+    total_time = scenario['total_execution_time']
+
     # Return the relevant data
     return {"initial_time": t0,
             "mission_time": scenario["mission_time"],
             "time_step": t[1] - t[0],
             "initial_state": x0,
             "external_stimuli": e,
-            "forced_states": x,
+            "state": x,
+            "initial_execution_time": init_exec_time,
+            "end_execution_time": end_exec_time,
+            "total_execution_time": total_time,
+            "execution_time_array": exec_time,
+            "time": t,
             }
 
 
@@ -181,18 +193,21 @@ UTILITY FUNCTIONS
 
 
 def load(path,
-         process_if_not_found=False
+         origin_folder=None,
+         parallel=True,
+         skip_if_found=True,
          ):
     path = Path(path)
 
-    try:
+    if path.exists() and skip_if_found:
         gt_data = GroundTruthDataset.load(path)
-    except FileNotFoundError:   # TODO verify integrity when handling this exception, what if the files in folder are not correct?
-        if not process_if_not_found:
-            m = f"Ground truth not found at: {path}\n   (process_if_not_found={process_if_not_found})"
-            raise FileNotFoundError(m)
-        gt_data = GroundTruthDataset.from_folder(path.parent, parallel=True)
+
+    elif origin_folder is not None:
+        gt_data = GroundTruthDataset.from_folder(origin_folder, parallel)
         save(gt_data, path)
+
+    else:
+        raise FileNotFoundError("The file does not exist and no origin folder was provided.")
 
     return gt_data
 

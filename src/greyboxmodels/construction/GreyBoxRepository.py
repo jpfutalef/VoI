@@ -41,12 +41,11 @@ class BayesianNormalEstimator:
         self.mu_history = [self.mu.copy()]
         self.sigma_history = [self.sigma.copy()]
 
-    def update(self, observations):
+    def update(self, sim_data):
         """
         Performs a Bayesian update on the mean and standard deviation based on new observations.
 
-        :param observations: A batch of normally distributed observations.
-                             Should be a list of lists if tracking multiple variables.
+        :param sim_data: Dictionary with simulation data.
         """
         observations = np.array(observations, dtype=np.float64)  # Convert input to NumPy array
         m = observations.shape[0]  # Number of new samples
@@ -169,16 +168,49 @@ class GreyBoxRepository:
         return len(self.reference_plant.plants)
 
     def update_performance(self,
-                           s,
-                           sim_data):
+                           plan,
+                           sim_data_list,
+                           gt_data_list,
+                           ):
         """
         Update the computational burden and fidelity performance metrics for a substitution plan.
 
-        :param s: Substitution plan.
-        :param sim_data: Dictionary with simulation data
+        :param plan: Substitution plan.
+        :param sim_data_list: List of cictionaries of simulation data
         """
-        self.model_performance[s]["computational_burden"].update(sim_data)
-        self.model_performance[s]["fidelity"].update(sim_data)
+        # Measure the properties to update them
+        z_l1 = list(map(computational_load, sim_data_list))
+        z_l2 = list(map(lack_of_fit, sim_data_list, gt_data_list))
+        self.model_performance[plan]["computational_burden"].update(z_l1)
+        self.model_performance[plan]["fidelity"].update(z_l2)
+
+    def voi(self, plan=None):
+        """
+        Computes Value of Information (VoI) for all substitution plans.
+        """
+        subs_list = self.substitution_plan_list()
+        Sref = subs_list[0]  # Reference plan (WBM)
+        voi_values = {}
+        for plan in subs_list[1:]:
+            # Get those values for the reference plan (WBM)
+            ref_mean_comp_burd, ref_std_comp_burd = self.computational_burden_estimators[Sref].get_distribution()
+            ref_mean_fidelity, ref_std_fidelity = self.fidelity_estimators[Sref].get_distribution()
+
+            # Get those values for the current plan
+            mean_comp_burd, std_comp_burd = self.computational_burden_estimators[plan].get_distribution()
+            mean_fidelity, std_fidelity = self.fidelity_estimators[plan].get_distribution()
+
+            # Aggregate each
+            Lref = ref_mean_comp_burd + ref_mean_fidelity
+            L = mean_comp_burd + mean_fidelity
+
+            # Compute VoI
+            VoI_plan = Lref - L
+
+            # Store
+            voi_values[plan] = VoI_plan
+
+        return voi_values
 
 
 """
@@ -196,7 +228,7 @@ def computational_load(sim_data):
     return 1  # Placeholder for now
 
 
-def lack_of_fit(ref_sim_data, sim_data):
+def lack_of_fit(sim_data, ref_sim_data):
     """
     Computes the lack of fit between two simulation data dictionaries.
 

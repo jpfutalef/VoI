@@ -69,13 +69,7 @@ class GreyBoxModelConstructor:
         """
         Returns historical performance metrics.
         """
-        history = {"computational_burden": {}, "fidelity": {}}
-
-        for plan in self.repository.keys():
-            history["computational_burden"][plan] = self.computational_burden_estimators[plan].get_history()
-            history["fidelity"][plan] = self.fidelity_estimators[plan].get_history()
-
-        return history
+        pass
 
     def _exhaustive_optimizer(self, w1=1., w2=1., n_scenarios=5, parallel=True):
         """
@@ -91,7 +85,7 @@ class GreyBoxModelConstructor:
             manager = mp.Manager()
             models_data = manager.dict(self.repository.model_repository)
             with ProcessPool() as pool:
-                results = pool.map(GreyBoxModelConstructor._process_plan,
+                results = pool.map(GreyBoxModelConstructor._simulate_plan,
                                    self.substitution_plans,
                                    [scenarios] * len(self.substitution_plans),
                                    [models_data] * len(self.substitution_plans),
@@ -100,8 +94,8 @@ class GreyBoxModelConstructor:
             for plan, result in results:
                 perf[plan] = result
         else:
-            for plan in self.substitution_plans[5:]:
-                plan, result = self._process_plan(plan, scenarios, self.repository)
+            for plan in self.substitution_plans:
+                plan, result = self._simulate_plan(plan, scenarios, self.repository)
                 perf[plan] = result
 
         # Obtain the best model
@@ -110,10 +104,12 @@ class GreyBoxModelConstructor:
 
         return best_model, perf
 
-    def _greedy_optimizer(self):
+    def _greedy_optimizer(self, w1=1., w2=1., **kwargs):
         """
         Performs a greedy optimization process for selecting the best GreyBox substitution plan.
         """
+        perf = {"method": "greedy_voi"}
+
         # Get the batches
         batches = self.gt_data.get_batches(self.gt_batch_size)
 
@@ -126,7 +122,10 @@ class GreyBoxModelConstructor:
             simulated_data_batch = self._opt_simulate_batch(current_s, batch, self.repository)
 
             # Update estimators
-            self.repository.update_performance(current_s, simulated_data_batch)  # Every update stores history
+            self.repository.update_performance(current_s,
+                                               simulated_data_batch,
+                                               batch,
+                                               )  # Every update stores history
 
             # Select the next plan to simulate
             current_s = self._next_substitution_plan_heuristic()
@@ -134,7 +133,11 @@ class GreyBoxModelConstructor:
         # Select the final best model
         best_plan = self.get_best_model()
         history = self.get_history()
-        return best_plan, history
+
+        perf["best_plan"] = best_plan
+        perf["history"] = history
+
+        return best_plan, perf
 
     def _next_substitution_plan_heuristic(self):
         """
@@ -142,53 +145,19 @@ class GreyBoxModelConstructor:
         """
         # Check start
         if self._best_substitution_plan is None:
-            valid_S = [S for S in self.substitution_plans if any(S)]
-            S = random.choice(valid_S)
-            return S
+            valid_s = [S for S in self.substitution_plans if any(S)]
+            return random.choice(valid_s)
 
-        # From the repository, use the meand and std to compute the relative error
+        # From the repository, use the mean and std to compute the relative error
         # Then, use the relative error to compute the VoI
         # Finally, select the plan with the highest VoI
         pass
 
-    def _opt_compute_voi(self):
-        """
-        Computes Value of Information (VoI) for all substitution plans.
-        """
-        subs_list = self.substitution_plan_list()
-        Sref = subs_list[0]  # Reference plan (WBM)
-        voi_values = {}
-        for plan in subs_list[1:]:
-            # Get those values for the reference plan (WBM)
-            ref_mean_comp_burd, ref_std_comp_burd = self.computational_burden_estimators[Sref].get_distribution()
-            ref_mean_fidelity, ref_std_fidelity = self.fidelity_estimators[Sref].get_distribution()
-
-            # Get those values for the current plan
-            mean_comp_burd, std_comp_burd = self.computational_burden_estimators[plan].get_distribution()
-            mean_fidelity, std_fidelity = self.fidelity_estimators[plan].get_distribution()
-
-            # Aggregate each
-            Lref = ref_mean_comp_burd + ref_mean_fidelity
-            L = mean_comp_burd + mean_fidelity
-
-            # Compute VoI
-            VoI_plan = Lref - L
-
-            # Store
-            voi_values[plan] = VoI_plan
-
-        return voi_values
-
     @staticmethod
-    def _process_plan(plan, scenarios, repository):
+    def _simulate_plan(plan, scenarios, repository):
         """Simulates all scenarios for a given plan (must be picklable for multiprocessing)."""
         gbm_outputs = GreyBoxModelConstructor._opt_simulate_batch(plan, scenarios, repository)
-
-        # Compute performance metrics
-        l1 = computational_load(gbm_outputs)
-        l2 = lack_of_fit(scenarios, gbm_outputs)
-
-        return plan, {"computational_burden": l1, "fidelity": l2, "simulated_data": gbm_outputs}
+        return gbm_outputs
 
     @staticmethod
     def _opt_simulate_batch(substitution_plan, scenarios, repository):
@@ -207,7 +176,7 @@ class GreyBoxModelConstructor:
                 time_step=scenario["time_step"],
                 initial_state=scenario["initial_state"],
                 external_stimuli=scenario["external_stimuli"],
-                forced_states=scenario["forced_states"],
+                forced_states=scenario["state"],
             )
             simulator = Simulator.Simulator()
             simulator.params = params
