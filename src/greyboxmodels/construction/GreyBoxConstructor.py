@@ -164,6 +164,7 @@ class GreyBoxModelConstructor:
         """
         A static version of `_opt_simulate_batch()` that can be called in parallel.
         It retrieves the model and runs the simulation.
+        # TODO create Input here
         """
         gbm = repository.get_model(substitution_plan)  # Use the repository instance
         gbm.stochastic = False  # Disable stochasticity always
@@ -171,12 +172,12 @@ class GreyBoxModelConstructor:
         results = []
         for scenario in scenarios:
             params = Simulator.SimulationParameters(
-                initial_time=scenario["initial_time"],
-                mission_time=scenario["mission_time"],
-                time_step=scenario["time_step"],
-                initial_state=scenario["initial_state"],
-                external_stimuli=scenario["external_stimuli"],
-                forced_states=scenario["state"],
+                initial_time=copy.deepcopy(scenario["initial_time"]),
+                mission_time=copy.deepcopy(scenario["mission_time"]),
+                time_step=copy.deepcopy(scenario["time_step"]),
+                initial_state=copy.deepcopy(scenario["initial_state"]),
+                external_stimuli=copy.deepcopy(scenario["external_stimuli"]),
+                forced_states=copy.deepcopy(scenario["state"]),
             )
             simulator = Simulator.Simulator()
             simulator.params = params

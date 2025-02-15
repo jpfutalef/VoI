@@ -179,8 +179,8 @@ class GreyBoxRepository:
         :param sim_data_list: List of cictionaries of simulation data
         """
         # Measure the properties to update them
-        z_l1 = list(map(computational_load, sim_data_list))
-        z_l2 = list(map(lack_of_fit, sim_data_list, gt_data_list))
+        z_l1 = computational_load(sim_data_list)
+        z_l2 = lack_of_fit(gt_data_list, sim_data_list)
         self.model_performance[plan]["computational_burden"].update(z_l1)
         self.model_performance[plan]["fidelity"].update(z_l2)
 
@@ -218,22 +218,120 @@ UTILITY FUNCTIONS
 """
 
 
-def computational_load(sim_data):
+def computational_load(sim_data_list):
     """
     Computes the computational load of a simulation data dictionary.
 
-    :param sim_data: Dictionary with simulation data.
+    :param sim_data_list: List of dictionaries with simulation data.
     :return: The computational load of the simulation.
     """
-    return 1  # Placeholder for now
+
+    def slope_fit(t_sim, t_exec):
+        """
+        Fits the passed time array to a line y = mx and returns the slope m
+        :param t_sim: the simulation time array
+        :param t_exec: the execution time array
+        :return: the slope m
+        """
+        # Fit the simulation time array to a line
+        t_sim_col = t_sim[:, np.newaxis]
+        m, _, _, _ = np.linalg.lstsq(t_sim_col, t_exec, rcond=None)
+        return m[0]
+
+    results = []
+    for sim_data in sim_data_list:
+        # Get necessary data
+        t_sim = np.array(sim_data["time"])
+        t_exec = np.array(sim_data["execution_time_array"])
+        t_exec = t_exec - t_exec[0]
+        m = slope_fit(t_sim, t_exec)
+        results.append(m)
+
+    return results
 
 
-def lack_of_fit(sim_data, ref_sim_data):
+def lack_of_fit(ref_sim_data_list, sim_data_list):
     """
     Computes the lack of fit between two simulation data dictionaries.
 
-    :param ref_sim_data: Reference simulation data dictionary.
-    :param sim_data: Simulation data dictionary.
+    :param ref_sim_data_list: Reference simulation data dictionary.
+    :param sim_data_list: Simulation data dictionary.
     :return: The lack of fit between the two simulations.
     """
-    return 1  # Placeholder for now
+
+    def ks_statistic(data_ref, data, n_bins=50):
+        """
+        Compute the Kolmogorov-Smirnov statistic between two empirical cumulative distribution functions.
+        For this, we first compute the empirical probability density functions of the datasets and then the empirical
+        cumulative distribution functions.
+        :param data: the data to compare
+        :param data_ref: the reference data
+        :param n_bins: the number of bins to use
+        """
+
+        # Check if the array contains the same values
+        n_min = min(len(data), len(data_ref))
+        comparison = sum(np.equal(data[:n_min], data_ref[:n_min]))
+        if comparison == n_min:
+            return 0., {"ks_location": data[0],
+                        "ks_value": 0,
+                        "bins": np.nan,
+                        "epdf1": np.nan,
+                        "epdf_ref": np.nan,
+                        "ecdf1": np.nan,
+                        "ecdf_ref": np.nan,
+                        "abs_diff": np.nan
+                        }
+
+        # Generate empirical PDF
+        bins = np.linspace(min(data.min(), data_ref.min()), max(data.max(), data_ref.max()), n_bins)
+        epdf, _ = np.histogram(data, bins=bins, density=True)
+        epdf_ref, _ = np.histogram(data_ref, bins=bins, density=True)
+
+        # Compute the empirical CDF
+        ecdf = empirical_cdf(bins, epdf)
+        ecdf_ref = empirical_cdf(bins, epdf_ref)
+
+        # Compute the absolute difference
+        abs_dff = np.abs(ecdf - ecdf_ref)
+
+        # get max and the value where it happens
+        ks_value = np.max(abs_dff)
+        max_diff_idx = np.argmax(abs_dff)
+        ks_location = bins[max_diff_idx]
+
+        # Store information
+        info = {"ks_location": ks_location,
+                "ks_value": ks_value,
+                "ecdf_at_ks": min(ecdf_ref[max_diff_idx], ecdf[max_diff_idx]),
+                "bins": bins,
+                "epdf": epdf,
+                "epdf_ref": epdf_ref,
+                "ecdf": ecdf,
+                "ecdf_ref": ecdf_ref,
+                "abs_diff": abs_dff,
+                }
+
+        return ks_value, info
+
+    def empirical_cdf(bins, epdf):
+        """
+        Compute the empirical cumulative distribution function of a dataset.
+        """
+        # Empirical CDF
+        ecdf = np.cumsum(epdf) * np.diff(bins)
+
+        # Add zero and one to teh array to ensure we obtain an ECDF
+        ecdf = np.concatenate(([0], ecdf, [1]))
+
+        return ecdf
+
+    # Compute the KS statistic
+    ks_list = []
+    for sim_data in sim_data_list:
+        x = np.array(sim_data["state"])
+        x_ref = np.array(sim_data["state"])
+        ks, info = ks_statistic(x_ref, x)
+        ks_list.append(ks)
+
+    return ks_list
