@@ -4,6 +4,7 @@ The dataset is supposed to exclusively be used for the construction of grey-box 
 
 Author: Juan-Pablo Futalef
 """
+import copy
 from pathlib import Path
 from typing import List
 import dill as pickle
@@ -18,53 +19,31 @@ from greyboxmodels.modelbuild import Input
 from greyboxmodels.simulation import Simulator
 
 
+def load_process_simulation_file(path):
+    s = Simulator.load_simulation_data(path)
+    try:
+        s = process_scenario(s)
+    except Exception as e:
+        print(f"Error processing scenario: {path}")
+        print(e)
+        return None
+    return s
+
 def process_scenario(scenario):
     """
-    Extracts the relevant data from one scenario
-    :param scenario: A dictionary containing the simulation data
-    :return: A dictionary containing the relevant data for the simulation
+    Extracts only relevant data from the scenario and processes it.
+    :param scenario: A dictionary containing the scenario data.
     """
-    # Time
-    t = scenario["time"]
+    # Extract relevant data
+    processed_scenario = copy.deepcopy(scenario)
+    del processed_scenario["step_data"]
 
-    # Uncontrolled inputs
-    e = scenario["uncontrolled_inputs"]
-    e = Input.Input(pd.DataFrame(e, index=t))
+    # Convert specified to numpy arrays
+    keys = ['time', 'uncontrolled_inputs', 'state', 'execution_time_array']
+    for key in keys:
+        processed_scenario[key] = np.array(processed_scenario[key])
 
-    # State variables
-    x = scenario["state"]
-    x0 = scenario["initial_state"]
-    x = np.vstack([x0, x])
-    t0 = scenario["initial_time"]
-    t = np.hstack([t0, t])
-    x = Input.Input(pd.DataFrame(x, index=t))
-
-    # Other stuff
-    t = scenario["time"]
-    exec_time = scenario["execution_time_array"]
-    init_exec_time = scenario["initial_execution_time"]
-    end_exec_time = scenario["end_execution_time"]
-    total_time = scenario['total_execution_time']
-
-    # Return the relevant data
-    return {"initial_time": t0,
-            "mission_time": scenario["mission_time"],
-            "time_step": t[1] - t[0],
-            "initial_state": x0,
-            "external_stimuli": e,
-            "state": x,
-            "initial_execution_time": init_exec_time,
-            "end_execution_time": end_exec_time,
-            "total_execution_time": total_time,
-            "execution_time_array": exec_time,
-            "time": t,
-            }
-
-
-def load_process_simulation_file(path):
-    sim_data = Simulator.load_simulation_data(path)
-    s = process_scenario(sim_data)
-    return s
+    return processed_scenario
 
 
 def process_scenarios(scenario_list):
@@ -111,6 +90,7 @@ class GroundTruthDataset:
     @classmethod
     def load_list(cls,
                   path_list,
+                  process=True,
                   parallel=True,
                   ):
         """
@@ -119,8 +99,9 @@ class GroundTruthDataset:
         :param path_list: List of paths to the files
         :return: A list of GroundTruthDataset objects
         """
+        worker = load_process_simulation_file if process else Simulator.load_simulation_data
         if not parallel:
-            return cls([load_process_simulation_file(path) for path in path_list], False)
+            return cls([worker(path) for path in path_list], False)
 
         # Use multiprocessing to load datasets in parallel
         n_processes = min(mp.cpu_count(), len(path_list))  # Don't create more processes than needed
@@ -130,10 +111,9 @@ class GroundTruthDataset:
             pbar.update(1)
 
         with mp.Pool(n_processes) as pool:
-            with tqdm.tqdm(total=len(path_list), desc="Loading datasets") as pbar:
+            with tqdm.tqdm(total=len(path_list), desc="Loading GT data") as pbar:
                 # Use apply_async to allow progress bar updates
-                results = [pool.apply_async(load_process_simulation_file, args=(path,), callback=update_progress) for
-                           path in path_list]
+                results = [pool.apply_async(worker, args=(path,), callback=update_progress) for path in path_list]
 
                 # Collect results once all processes are done
                 scenarios = [r.get() for r in results]  # Ensures tasks complete before returning
@@ -143,6 +123,7 @@ class GroundTruthDataset:
     @classmethod
     def from_folder(cls,
                     folder_path,
+                    process=True,
                     parallel=True,
                     ):
         """
@@ -150,13 +131,14 @@ class GroundTruthDataset:
         The files must contain in the name 'simulation' and end with '.pkl'.
 
         :param folder_path: Path to the folder
+        :param parallel: If True, the datasets will be loaded in parallel
         :return: A GroundTruthDataset object
         """
         # Get list of files
         files = [f for f in folder_path.iterdir() if f.is_file() and "simulation" in f.name and f.suffix == ".pkl"]
 
         # Load scenarios
-        return cls.load_list(files, parallel)
+        return cls.load_list(files, process, parallel)
 
     def extract(self, n=1):
         """
@@ -195,6 +177,7 @@ UTILITY FUNCTIONS
 def load(path,
          origin_folder=None,
          parallel=True,
+         process_data=True,
          skip_if_found=True,
          ):
     path = Path(path)
@@ -203,8 +186,9 @@ def load(path,
         gt_data = GroundTruthDataset.load(path)
 
     elif origin_folder is not None:
-        gt_data = GroundTruthDataset.from_folder(origin_folder, parallel)
+        gt_data = GroundTruthDataset.from_folder(origin_folder, process=process_data, parallel=parallel)
         save(gt_data, path)
+        print(f"Ground truth data saved to {path}")
 
     else:
         raise FileNotFoundError("The file does not exist and no origin folder was provided.")

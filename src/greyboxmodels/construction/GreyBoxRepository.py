@@ -7,6 +7,7 @@ import copy
 from typing import List
 from itertools import product
 import numpy as np
+from scipy.integrate import simpson
 
 from greyboxmodels.modelbuild import Plant
 
@@ -27,7 +28,10 @@ class BayesianNormalEstimator:
     # TODO generalize to any estimator or model performance metric
     """
 
-    def __init__(self, mu_prior, sigma_prior):
+    def __init__(self,
+                 mu_prior,
+                 sigma_prior,
+                 ):
         """
         Initializes the Bayesian normal estimator with prior mean and standard deviation.
 
@@ -93,19 +97,9 @@ class GreyBoxRepository:
                  ):
         """
         A class to enable handy use of a Grey-Box Model.
-
-        Parameters
-        ----------
-        reference_plant : Plant.HierarchicalPlant
-            The reference White-Box Model Plant.
-        bbm_plants : List[Plant.Plant]
-            The Black-Box Model Plants.
-            Length of the list must be equal to the number of plants in the reference_plant.
-
-        Returns
-        -------
-        GreyBoxRepository
-
+        :param reference_plant: Reference plant.
+        :param bbm_plants: List of Black-Box Models.
+        :param risk_metric: Risk metric to use for lack of fit.
         """
         # Check if the number of plants in the reference model is equal to the number of plants in the BBM.
         assert len(reference_plant.plants) == len(
@@ -114,6 +108,10 @@ class GreyBoxRepository:
         # This plant inherits the properties of the reference plant.
         self.reference_plant = reference_plant
         self.bbm_plants = bbm_plants
+
+        # Risk metric to use for lack of fit
+        # self.risk_metric = risk_metric    # TODO generalize
+        # self.risk_aggregation = risk_aggregation  # TODO generalize
 
         # Generate grey-box hierarchies
         self.model_repository = self.generate_greybox_hierarchies()
@@ -171,6 +169,7 @@ class GreyBoxRepository:
                            plan,
                            sim_data_list,
                            gt_data_list,
+                           risk_metric,
                            ):
         """
         Update the computational burden and fidelity performance metrics for a substitution plan.
@@ -180,7 +179,12 @@ class GreyBoxRepository:
         """
         # Measure the properties to update them
         z_l1 = computational_load(sim_data_list)
-        z_l2 = lack_of_fit(gt_data_list, sim_data_list)
+        z_l2 = lack_of_fit(gt_data_list,
+                           sim_data_list,
+                           risk_metric,
+                           self.reference_plant,
+                           self.get_model(plan),
+                           )
         self.model_performance[plan]["computational_burden"].update(z_l1)
         self.model_performance[plan]["fidelity"].update(z_l2)
 
@@ -250,88 +254,105 @@ def computational_load(sim_data_list):
     return results
 
 
-def lack_of_fit(ref_sim_data_list, sim_data_list):
+def lack_of_fit(ref_sim_data_list,
+                sim_data_list,
+                risk_metric,
+                plant_ref,
+                plant_gbm,
+                ):
     """
     Computes the lack of fit between two simulation data dictionaries.
 
     :param ref_sim_data_list: Reference simulation data dictionary.
     :param sim_data_list: Simulation data dictionary.
+    :param risk_metric: Risk metric to use for lack of fit.
+    :param risk_aggregation: Risk aggregation function.
+    :param plant_ref: Reference plant.
+    :param plant_gbm: Grey-Box Model.
     :return: The lack of fit between the two simulations.
     """
 
-    def ks_statistic(data_ref, data, n_bins=50):
+    def ks_statistic(data_ref, data, n_bins=10):
         """
         Compute the Kolmogorov-Smirnov statistic between two empirical cumulative distribution functions.
-        For this, we first compute the empirical probability density functions of the datasets and then the empirical
-        cumulative distribution functions.
         :param data: the data to compare
         :param data_ref: the reference data
         :param n_bins: the number of bins to use
         """
+        # Generate shared bin edges for both datasets
+        min_x = min(data.min(), data_ref.min())
+        max_x = max(data.max(), data_ref.max())
+        bins = np.linspace(min_x, max_x, n_bins + 1)
 
-        # Check if the array contains the same values
-        n_min = min(len(data), len(data_ref))
-        comparison = sum(np.equal(data[:n_min], data_ref[:n_min]))
-        if comparison == n_min:
-            return 0., {"ks_location": data[0],
-                        "ks_value": 0,
-                        "bins": np.nan,
-                        "epdf1": np.nan,
-                        "epdf_ref": np.nan,
-                        "ecdf1": np.nan,
-                        "ecdf_ref": np.nan,
-                        "abs_diff": np.nan
-                        }
-
-        # Generate empirical PDF
-        bins = np.linspace(min(data.min(), data_ref.min()), max(data.max(), data_ref.max()), n_bins)
-        epdf, _ = np.histogram(data, bins=bins, density=True)
+        # Compute empirical PDFs
         epdf_ref, _ = np.histogram(data_ref, bins=bins, density=True)
+        epdf, _ = np.histogram(data, bins=bins, density=True)
 
-        # Compute the empirical CDF
-        ecdf = empirical_cdf(bins, epdf)
+        # Compute empirical CDFs
         ecdf_ref = empirical_cdf(bins, epdf_ref)
+        ecdf = empirical_cdf(bins, epdf)
 
-        # Compute the absolute difference
-        abs_dff = np.abs(ecdf - ecdf_ref)
-
-        # get max and the value where it happens
-        ks_value = np.max(abs_dff)
-        max_diff_idx = np.argmax(abs_dff)
-        ks_location = bins[max_diff_idx]
+        # Compute KS statistic
+        abs_diff = np.abs(ecdf - ecdf_ref)
+        ks_value = np.max(abs_diff)
+        max_diff_idx = np.argmax(abs_diff)
+        ks_loc = bins[max_diff_idx]
 
         # Store information
-        info = {"ks_location": ks_location,
+        info = {"ks_idx": max_diff_idx,
                 "ks_value": ks_value,
-                "ecdf_at_ks": min(ecdf_ref[max_diff_idx], ecdf[max_diff_idx]),
+                "ks_bin_loc": ks_loc,
                 "bins": bins,
                 "epdf": epdf,
                 "epdf_ref": epdf_ref,
                 "ecdf": ecdf,
                 "ecdf_ref": ecdf_ref,
-                "abs_diff": abs_dff,
+                "abs_diff": abs_diff,
                 }
 
         return ks_value, info
 
-    def empirical_cdf(bins, epdf):
+    def empirical_cdf(bin_edges, epdf):
         """
-        Compute the empirical cumulative distribution function of a dataset.
+        Compute the empirical cumulative distribution function (ECDF) from an empirical PDF.
+
+        :param bin_edges: Bin edges from np.histogram (length n_bins + 1)
+        :param epdf: Empirical probability density function (length n_bins)
+        :return: ECDF values at each bin edge
         """
-        # Empirical CDF
-        ecdf = np.cumsum(epdf) * np.diff(bins)
+        # Compute cumulative sum of the PDF to get the ECDF
+        cdf_values = np.cumsum(epdf * np.diff(bin_edges))
 
-        # Add zero and one to teh array to ensure we obtain an ECDF
-        ecdf = np.concatenate(([0], ecdf, [1]))
+        # Normalize so that ECDF ranges from 0 to 1
+        cdf_values /= cdf_values[-1]  # Divide by last value to make it 1
 
-        return ecdf
+        # Prepend a 0 at the start to ensure ECDF starts at 0
+        cdf_values = np.concatenate(([0], cdf_values))
 
-    # Compute the KS statistic
-    ks_list = []
-    for sim_data in sim_data_list:
-        x = np.array(sim_data["state"])
-        x_ref = np.array(sim_data["state"])
-        ks, info = ks_statistic(x_ref, x)
-        ks_list.append(ks)
+        return cdf_values
 
-    return ks_list
+    def aggregate(t: np.ndarray, r: np.ndarray) -> float:
+        """
+        Aggregates the risk metric r using integration.
+        :param t: time points
+        :param r: risk metric values
+        :return: aggregated risk metric
+        """
+        return simpson(r, t)
+
+    # Compute the metric from each simulation
+    metric_ref = [risk_metric(ref_sim_data, plant_ref) for ref_sim_data in ref_sim_data_list]
+    metric = [risk_metric(sim_data, plant_gbm) for sim_data in sim_data_list]
+
+    # Aggregate the metric (one per simulation)
+    agg_metric_ref = [aggregate(x["time"], m) for x, m in zip(ref_sim_data_list, metric_ref)]
+    agg_metric = [aggregate(x["time"], m) for x, m in zip(sim_data_list, metric)]
+
+    # Turn into np array for KS computation
+    agg_metric_ref = np.array(agg_metric_ref)
+    agg_metric = np.array(agg_metric)
+
+    # Compute KS statistic for the aggregated metric
+    ks, info = ks_statistic(agg_metric_ref, agg_metric)
+
+    return ks, info

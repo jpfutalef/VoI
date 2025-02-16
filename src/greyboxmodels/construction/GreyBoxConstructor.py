@@ -5,6 +5,9 @@ Author: Juan-Pablo Futalef
 """
 import copy
 import random
+
+import numpy as np
+import pandas as pd
 from pathos.multiprocessing import ProcessPool
 import dill as pickle
 import tqdm
@@ -13,12 +16,14 @@ import multiprocessing as mp
 from greyboxmodels.construction.GreyBoxRepository import GreyBoxRepository, computational_load, lack_of_fit
 from greyboxmodels.construction.GroundTruth import GroundTruthDataset
 from greyboxmodels.simulation import Simulator
+from greyboxmodels.modelbuild import Input
 
 
 class GreyBoxModelConstructor:
     def __init__(self,
                  model_repository: GreyBoxRepository,
                  gt_data: GroundTruthDataset,
+                 risk_metric: callable,
                  gt_batch_size: int = 5,
                  s0=None,
                  ):
@@ -40,6 +45,7 @@ class GreyBoxModelConstructor:
         self._simulator = Simulator.Simulator()
         self._const_current_plan = None
         self.substitution_plans = list(self.repository.model_repository.keys())
+        self._risk_metric = risk_metric
 
     def construct(self,
                   method="greedy_voi",
@@ -125,6 +131,7 @@ class GreyBoxModelConstructor:
             self.repository.update_performance(current_s,
                                                simulated_data_batch,
                                                batch,
+                                               risk_metric=self._risk_metric,
                                                )  # Every update stores history
 
             # Select the next plan to simulate
@@ -171,13 +178,30 @@ class GreyBoxModelConstructor:
 
         results = []
         for scenario in scenarios:
+            # Time
+            t = scenario["time"]
+            mission_time = scenario["mission_time"]
+            dt = t[1] - t[0]
+
+            # Uncontrolled inputs
+            e = scenario["uncontrolled_inputs"]
+            e = Input.Input(pd.DataFrame(e, index=t))
+
+            # State variables
+            x = scenario["state"]
+            x0 = scenario["initial_state"]
+            x = np.vstack([x0, x])
+            t0 = scenario["initial_time"]
+            t = np.hstack([t0, t])
+            x = Input.Input(pd.DataFrame(x, index=t))
+
             params = Simulator.SimulationParameters(
-                initial_time=copy.deepcopy(scenario["initial_time"]),
-                mission_time=copy.deepcopy(scenario["mission_time"]),
-                time_step=copy.deepcopy(scenario["time_step"]),
-                initial_state=copy.deepcopy(scenario["initial_state"]),
-                external_stimuli=copy.deepcopy(scenario["external_stimuli"]),
-                forced_states=copy.deepcopy(scenario["state"]),
+                initial_time=t0,
+                mission_time=mission_time,
+                time_step=dt,
+                initial_state=x0,
+                external_stimuli=e,
+                forced_states=x,
             )
             simulator = Simulator.Simulator()
             simulator.params = params
