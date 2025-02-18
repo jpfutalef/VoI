@@ -38,46 +38,55 @@ class BayesianNormalEstimator:
         :param mu_prior: Prior mean (scalar or array for multiple variables).
         :param sigma_prior: Prior standard deviation (same shape as mu_prior).
         """
-        self.mu = np.array(mu_prior, dtype=np.float64)  # Convert to NumPy array
-        self.sigma = np.array(sigma_prior, dtype=np.float64)  # Convert to NumPy array
+        self.mu = mu_prior
+        self.sigma = sigma_prior
 
         # Track history for visualization
-        self.mu_history = [self.mu.copy()]
-        self.sigma_history = [self.sigma.copy()]
+        self.mu_history = [self.mu]
+        self.sigma_history = [self.sigma]
 
-    def update(self, sim_data):
-        """
-        Performs a Bayesian update on the mean and standard deviation based on new observations.
+        # Track info history
+        self.info_history = []
 
-        :param sim_data: Dictionary with simulation data.
+    def update(self, observations, info=None):
         """
-        observations = np.array(observations, dtype=np.float64)  # Convert input to NumPy array
-        m = observations.shape[0]  # Number of new samples
+        Performs a Bayesian update on the mean and standard deviation based on multiple observations of a single variable.
+
+        :param observations: 1D array of new observations (multiple samples of a single variable).
+        :param info: Optional metadata to store with update history.
+        """
+        observations = np.array(observations, dtype=np.float64)  # Ensure NumPy array
+        m = len(observations)  # Number of new samples
 
         if m == 0:
             return  # No update if no new data
 
-        # Compute sample mean and standard deviation from the new observations
-        mu_Y = np.mean(observations, axis=0)  # Mean per variable
-        sigma_Y = np.std(observations, axis=0, ddof=1)  # Std deviation per variable
+        # Compute sample mean and variance from new observations
+        mu_Y = np.mean(observations)
+        sigma_Y = np.std(observations, ddof=1)
 
-        # Prior variance and sample variance
+        # Convert to variance for computation
         sigma_prior_sq = self.sigma ** 2
-        sigma_Y_sq = sigma_Y ** 2
+        sigma_Y_sq = max(sigma_Y ** 2, 1e-8)  # Avoid zero variance issues
+
 
         # Bayesian update formulas
-        mu_new = (sigma_prior_sq * mu_Y + m * sigma_Y_sq * self.mu) / (m * sigma_Y_sq + sigma_prior_sq)
-        sigma_new = np.sqrt((sigma_prior_sq * sigma_Y_sq) / (m * sigma_Y_sq + sigma_prior_sq))
+        sigma_new_sq = (1 / sigma_prior_sq + m / sigma_Y_sq) ** -1
+        mu_new = sigma_new_sq * (self.mu / sigma_prior_sq + m * mu_Y / sigma_Y_sq)
+
+        # Convert variance back to standard deviation
+        sigma_new = np.sqrt(sigma_new_sq)
 
         # Update estimates
         self.mu = mu_new
         self.sigma = sigma_new
 
         # Store history
-        self.mu_history.append(self.mu.copy())
-        self.sigma_history.append(self.sigma.copy())
+        self.mu_history.append(self.mu)
+        self.sigma_history.append(self.sigma)
+        self.info_history.append(info)
 
-    def get_distribution(self):
+    def get_mean_variance(self):
         """
         Returns the current mean and standard deviation estimates.
         """
@@ -115,9 +124,82 @@ class GreyBoxRepository:
 
         # Generate grey-box hierarchies
         self.model_repository = self.generate_greybox_hierarchies()
-        self.model_performance = {s: {"computational_burden": BayesianNormalEstimator(0, 1),
-                                      "fidelity": BayesianNormalEstimator(0, 1)}
-                                  for s in self.model_repository}
+        self.model_performance = None
+        self.reference_plan = list(self.model_repository.keys())[0]
+
+    def prior_values(self,
+                     simulation_data_list,
+                     risk_metric,
+                     num_scenarios=50,
+                     batch_size=10,
+                     ):
+        """
+        Returns the prior values of the Bayesian estimators.
+        TODO find a way to include in init
+        """
+        # Get the indices of num_scenarios alternatives
+        indices = np.random.choice(len(simulation_data_list), num_scenarios, replace=False)
+        sim_data_list = [simulation_data_list[i] for i in indices]
+
+        # Create a dictionary to store the prior performances
+        perf = {plan: {} for plan in self.model_repository.keys()}
+
+        """
+        Computational burden
+        """
+        # Read the sim data and compute the average computational load
+        z_l1, info_l1 = computational_load(sim_data_list)
+        mu_l1_wbm = np.mean(z_l1)
+        sigma_l1_wbm = np.std(z_l1, ddof=1)  # Sample standard deviation
+
+        # For the BBMs, assume a computational burden 10% the mean of the reference model
+        mu_l1_bbm = 0.1 * mu_l1_wbm
+        sigma_l1_bbm = sigma_l1_wbm
+
+        # Create priors for each plan: consider each subsystem is 1/3 of the total computational burden
+        mu_l1_sub_wbm = mu_l1_wbm / 3
+        mu_l1_sub_bbm = mu_l1_bbm / 3
+        sigma_l1_sub_wbm = sigma_l1_wbm / 3
+        sigma_l1_sub_bbm = sigma_l1_bbm / 3
+
+        for plan in self.model_repository:
+            mu_vals = [mu_l1_sub_bbm if x else mu_l1_sub_wbm for x in plan]
+            sigma_vals = [sigma_l1_sub_bbm if x else sigma_l1_sub_wbm for x in plan]
+
+            # Apply normal sum properties to obtain gbm mu and sigma
+            mu_gbm = np.sum(mu_vals)
+            sigma_gbm = np.sqrt(np.sum(np.square(sigma_vals)))
+
+            # Store the estimators
+            perf[plan]["computational_load"] = BayesianNormalEstimator(mu_gbm, sigma_gbm)
+
+        """
+        Fidelity
+        """
+        # Read the sim data and compute the average lack of fit
+        mu_l2_wbm = 0.1
+        sigma_l2_wbm = 0.1
+
+        # For the BBMs, assume a lof 1.5 times that of the reference model
+        mu_l2_bbm = 1.8 * mu_l2_wbm
+        sigma_l2_bbm = 1.8 * sigma_l2_wbm
+
+        # Create priors for each plan
+        for plan in self.model_repository:
+            mu_vals = [mu_l2_bbm if x else mu_l2_wbm for x in plan]
+            sigma_vals = [sigma_l2_bbm if x else sigma_l2_wbm for x in plan]
+
+            # Apply normal sum properties to obtain gbm mu and sigma
+            mu_gbm = np.sum(mu_vals)
+            sigma_gbm = np.sqrt(np.sum(np.square(sigma_vals)))
+
+            # Store the estimators
+            perf[plan]["lack_of_fit"] = BayesianNormalEstimator(mu_gbm, sigma_gbm)
+
+        # Write to the internal attributes
+        self.model_performance = perf
+
+        return self.model_performance
 
     def generate_greybox_hierarchies(self):
         """
@@ -178,43 +260,79 @@ class GreyBoxRepository:
         :param sim_data_list: List of cictionaries of simulation data
         """
         # Measure the properties to update them
-        z_l1 = computational_load(sim_data_list)
-        z_l2 = lack_of_fit(gt_data_list,
-                           sim_data_list,
-                           risk_metric,
-                           self.reference_plant,
-                           self.get_model(plan),
-                           )
-        self.model_performance[plan]["computational_burden"].update(z_l1)
-        self.model_performance[plan]["fidelity"].update(z_l2)
+        z_l1, info_l1 = computational_load(sim_data_list)
+        z_l2, info_l1 = lack_of_fit(ref_sim_data_list=gt_data_list,
+                                    sim_data_list=sim_data_list,
+                                    risk_metric=risk_metric,
+                                    plant_ref=self.reference_plant,
+                                    plant_gbm=self.get_model(plan),
+                                    )
+        self.model_performance[plan]["computational_load"].update(z_l1, info_l1)
+        self.model_performance[plan]["lack_of_fit"].update(z_l2, info_l1)
 
-    def voi(self, plan=None):
+    def voi(self, loss_fun, **kwargs):
         """
         Computes Value of Information (VoI) for all substitution plans.
         """
-        subs_list = self.substitution_plan_list()
-        Sref = subs_list[0]  # Reference plan (WBM)
-        voi_values = {}
-        for plan in subs_list[1:]:
-            # Get those values for the reference plan (WBM)
-            ref_mean_comp_burd, ref_std_comp_burd = self.computational_burden_estimators[Sref].get_distribution()
-            ref_mean_fidelity, ref_std_fidelity = self.fidelity_estimators[Sref].get_distribution()
+        # Storage
+        voi_dict = {}
 
-            # Get those values for the current plan
-            mean_comp_burd, std_comp_burd = self.computational_burden_estimators[plan].get_distribution()
-            mean_fidelity, std_fidelity = self.fidelity_estimators[plan].get_distribution()
+        # Reference
+        ref_loss = loss_fun(self.reference_plan, **kwargs)
+        voi_dict[self.reference_plan] = {"loss": ref_loss, "voi": 0}
 
-            # Aggregate each
-            Lref = ref_mean_comp_burd + ref_mean_fidelity
-            L = mean_comp_burd + mean_fidelity
+        # Compute the loss
+        for plan in self.model_repository.keys():
+            if plan == self.reference_plan:
+                continue
+            loss = loss_fun(plan, **kwargs)
+            voi = ref_loss - loss
+            voi_dict[plan] = {"loss": loss, "voi": voi}
 
-            # Compute VoI
-            VoI_plan = Lref - L
+        return voi_dict
 
-            # Store
-            voi_values[plan] = VoI_plan
+    def plan_loss(self, plan, w1, w2):
+        """
+        Computes the model loss for a given plan.
+        """
 
-        return voi_values
+        # Get the performance data
+        l1_estimator = self.model_performance[plan]["computational_load"]
+        l2_estimator = self.model_performance[plan]["lack_of_fit"]
+
+        # Get the mean and standard deviation of the performance metrics
+        mu1, sigma1 = l1_estimator.get_mean_variance()
+        mu2, sigma2 = l2_estimator.get_mean_variance()
+
+        # Compute the loss
+        loss = w1 * mu1 + w2 * mu2
+
+        return loss
+
+    def plan_loss_variance_penalized(self, plan, w1, w2, w3):
+        """
+        Computes the model loss for a given plan.
+        """
+        # Get the performance data
+        l1_estimator = self.model_performance[plan]["computational_load"]
+        l2_estimator = self.model_performance[plan]["lack_of_fit"]
+
+        # Get the mean and standard deviation of the performance metrics
+        mu1, sigma1 = l1_estimator.get_mean_variance()
+        mu2, sigma2 = l2_estimator.get_mean_variance()
+
+        # Scale the means
+        mu1_scaled = mu1 * w1  # Normalize computational burden
+        mu2_scaled = mu2 * w2  # Normalize fidelity
+
+        # Scale the standard deviations using the same transformation
+        sigma1_scaled = sigma1 * w1
+        sigma2_scaled = sigma2 * w2
+
+        # Compute the loss function
+        loss = mu1_scaled + mu2_scaled + w3 * np.sqrt(sigma1_scaled ** 2 + sigma2_scaled ** 2)
+
+        return loss
 
 
 """
@@ -224,7 +342,7 @@ UTILITY FUNCTIONS
 
 def computational_load(sim_data_list):
     """
-    Computes the computational load of a simulation data dictionary.
+    Computes the computational load of each simulation data dictionary in the list.
 
     :param sim_data_list: List of dictionaries with simulation data.
     :return: The computational load of the simulation.
@@ -243,6 +361,7 @@ def computational_load(sim_data_list):
         return m[0]
 
     results = []
+    info = []
     for sim_data in sim_data_list:
         # Get necessary data
         t_sim = np.array(sim_data["time"])
@@ -250,8 +369,9 @@ def computational_load(sim_data_list):
         t_exec = t_exec - t_exec[0]
         m = slope_fit(t_sim, t_exec)
         results.append(m)
+        info.append({"t_sim": t_sim, "t_exec": t_exec, "slope": m})
 
-    return results
+    return results, info
 
 
 def lack_of_fit(ref_sim_data_list,
@@ -279,6 +399,10 @@ def lack_of_fit(ref_sim_data_list,
         :param data_ref: the reference data
         :param n_bins: the number of bins to use
         """
+        # If both are the same, return 0
+        if np.array_equal(data_ref, data):
+            return 0, {"equal_data": True}
+
         # Generate shared bin edges for both datasets
         min_x = min(data.min(), data_ref.min())
         max_x = max(data.max(), data_ref.max())
@@ -340,19 +464,65 @@ def lack_of_fit(ref_sim_data_list,
         """
         return simpson(r, t)
 
-    # Compute the metric from each simulation
-    metric_ref = [risk_metric(ref_sim_data, plant_ref) for ref_sim_data in ref_sim_data_list]
-    metric = [risk_metric(sim_data, plant_gbm) for sim_data in sim_data_list]
+    def ensure_full_coverage_indices(N, Ns=3):
+        """
+        Ensures that in N random samplings of Ns elements, all elements are selected at least once.
 
-    # Aggregate the metric (one per simulation)
-    agg_metric_ref = [aggregate(x["time"], m) for x, m in zip(ref_sim_data_list, metric_ref)]
-    agg_metric = [aggregate(x["time"], m) for x, m in zip(sim_data_list, metric)]
+        :param N: Total number of elements.
+        :param Ns: Number of elements to sample in each iteration.
+        :return: List of sampled subsets (indices of the original list).
+        """
+        if Ns >= N:
+            raise ValueError("Ns must be smaller than the number of elements N.")
 
-    # Turn into np array for KS computation
-    agg_metric_ref = np.array(agg_metric_ref)
-    agg_metric = np.array(agg_metric)
+        sampled_indices = []
+        remaining_indices = set(range(N))  # Track indices that haven't been included yet
 
-    # Compute KS statistic for the aggregated metric
-    ks, info = ks_statistic(agg_metric_ref, agg_metric)
+        for _ in range(N):
+            if len(remaining_indices) >= Ns:
+                # Preferentially sample from indices that haven't been included yet
+                sampled = np.random.choice(list(remaining_indices), size=Ns, replace=False)
+            else:
+                # Sample randomly while ensuring we include remaining unseen indices
+                needed = list(remaining_indices)
+                additional = np.random.choice(range(N), size=Ns - len(needed), replace=False)
+                sampled = np.array(needed + list(additional))
 
-    return ks, info
+            sampled_indices.append(sampled)
+            remaining_indices -= set(sampled)  # Remove newly covered indices
+
+            # Reset remaining elements if all have been covered
+            if not remaining_indices:
+                remaining_indices = set(range(N))
+
+        return sampled_indices
+
+    # Get the combinations
+    comb_idx = ensure_full_coverage_indices(len(ref_sim_data_list), Ns=3)
+
+    # Storage
+    ks_list = []
+    info_list = []
+    for idx in comb_idx:
+        # Use the index to get the target scenarios
+        s_ref = [ref_sim_data_list[i] for i in idx]
+        s = [sim_data_list[i] for i in idx]
+
+        # Compute the metric from each simulation
+        metric_ref = [risk_metric(ref_sim_data, plant_ref) for ref_sim_data in s_ref]
+        metric = [risk_metric(sim_data, plant_gbm) for sim_data in s]
+
+        # Aggregate the metric (one per simulation)
+        agg_metric_ref = [aggregate(x["time"], m) for x, m in zip(s_ref, metric_ref)]
+        agg_metric = [aggregate(x["time"], m) for x, m in zip(s, metric)]
+
+        # Turn into np array for KS computation
+        agg_metric_ref = np.array(agg_metric_ref)
+        agg_metric = np.array(agg_metric)
+
+        # Compute KS statistic for the aggregated metric
+        ks, info = ks_statistic(agg_metric_ref, agg_metric)
+        ks_list.append(ks)
+        info_list.append(info)
+
+    return ks_list, info_list

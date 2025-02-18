@@ -19,15 +19,16 @@ from greyboxmodels.modelbuild import Input
 from greyboxmodels.simulation import Simulator
 
 
-def load_process_simulation_file(path):
+def load_process_simulation_file(path, process_fun):
     s = Simulator.load_simulation_data(path)
     try:
-        s = process_scenario(s)
+        s = process_fun(s)
     except Exception as e:
         print(f"Error processing scenario: {path}")
         print(e)
         return None
     return s
+
 
 def process_scenario(scenario):
     """
@@ -63,7 +64,6 @@ def process_scenarios(scenario_list):
 class GroundTruthDataset:
     def __init__(self,
                  scenario_list: List[dict],
-                 process_data: bool = False
                  ):
         """
             Initializes the dataset.
@@ -72,7 +72,7 @@ class GroundTruthDataset:
             :param store_raw_data: If True, the original data will be stored in the object.
             """
         # Process the scenarios
-        self.scenarios = process_scenarios(scenario_list) if process_data else scenario_list
+        self.scenarios = scenario_list
 
     @classmethod
     def load(cls, path):
@@ -91,6 +91,7 @@ class GroundTruthDataset:
     def load_list(cls,
                   path_list,
                   process=True,
+                  process_fun=process_scenario,
                   parallel=True,
                   ):
         """
@@ -101,7 +102,7 @@ class GroundTruthDataset:
         """
         worker = load_process_simulation_file if process else Simulator.load_simulation_data
         if not parallel:
-            return cls([worker(path) for path in path_list], False)
+            return cls([worker(path, process_fun) for path in path_list], False)
 
         # Use multiprocessing to load datasets in parallel
         n_processes = min(mp.cpu_count(), len(path_list))  # Don't create more processes than needed
@@ -113,7 +114,8 @@ class GroundTruthDataset:
         with mp.Pool(n_processes) as pool:
             with tqdm.tqdm(total=len(path_list), desc="Loading GT data") as pbar:
                 # Use apply_async to allow progress bar updates
-                results = [pool.apply_async(worker, args=(path,), callback=update_progress) for path in path_list]
+                results = [pool.apply_async(worker, args=(path, process_fun), callback=update_progress)
+                           for path in path_list]
 
                 # Collect results once all processes are done
                 scenarios = [r.get() for r in results]  # Ensures tasks complete before returning
@@ -124,6 +126,7 @@ class GroundTruthDataset:
     def from_folder(cls,
                     folder_path,
                     process=True,
+                    process_fun=process_scenario,
                     parallel=True,
                     ):
         """
@@ -138,7 +141,7 @@ class GroundTruthDataset:
         files = [f for f in folder_path.iterdir() if f.is_file() and "simulation" in f.name and f.suffix == ".pkl"]
 
         # Load scenarios
-        return cls.load_list(files, process, parallel)
+        return cls.load_list(path_list=files, process=process, process_fun=process_fun, parallel=parallel)
 
     def extract(self, n=1):
         """
@@ -168,6 +171,11 @@ class GroundTruthDataset:
 
         return batches
 
+    def process_scenarios(self, process_fun):
+        for i, scenario in enumerate(self.scenarios):
+            noisy_scenario = process_fun(scenario)
+            self.scenarios[i] = noisy_scenario
+
 
 """
 UTILITY FUNCTIONS
@@ -178,6 +186,7 @@ def load(path,
          origin_folder=None,
          parallel=True,
          process_data=True,
+         process_fun=process_scenario,
          skip_if_found=True,
          ):
     path = Path(path)
@@ -186,7 +195,7 @@ def load(path,
         gt_data = GroundTruthDataset.load(path)
 
     elif origin_folder is not None:
-        gt_data = GroundTruthDataset.from_folder(origin_folder, process=process_data, parallel=parallel)
+        gt_data = GroundTruthDataset.from_folder(origin_folder, process=process_data, parallel=parallel, process_fun=process_fun)
         save(gt_data, path)
         print(f"Ground truth data saved to {path}")
 
