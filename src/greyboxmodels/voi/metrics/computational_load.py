@@ -18,6 +18,14 @@ def computational_load(t_sim, t_exec):
     :param t_exec: the execution time array
     :return: the slope m
     """
+    # Ensure numpy array
+    t_sim = np.array(t_sim)
+    t_exec = np.array(t_exec)
+
+    # offset using the first element in each array
+    t_sim = t_sim - t_sim[0]
+    t_exec = t_exec - t_exec[0]
+
     # Fit the simulation time array to a line
     t_sim_col = t_sim[:, np.newaxis]
     m, _, _, _ = np.linalg.lstsq(t_sim_col, t_exec, rcond=None)
@@ -134,3 +142,5 @@ def folders_comparison(folders,
             pickle.dump(info, f)
 
     return df, info
+
+

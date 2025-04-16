@@ -19,7 +19,7 @@ from greyboxmodels.modelbuild import Input
 from greyboxmodels.simulation import Simulator
 
 
-def load_process_simulation_file(path, process_fun):
+def load_and_process_simulation_file(path, process_fun):
     s = Simulator.load_simulation_data(path)
     try:
         s = process_fun(s)
@@ -30,7 +30,7 @@ def load_process_simulation_file(path, process_fun):
     return s
 
 
-def process_scenario(scenario):
+def default_process_scenario(scenario):
     """
     Extracts only relevant data from the scenario and processes it.
     :param scenario: A dictionary containing the scenario data.
@@ -55,15 +55,16 @@ def process_scenarios(scenario_list):
     """
     processed_scenarios = []
     for scenario in tqdm.tqdm(scenario_list):
-        processed_scenario = process_scenario(scenario)
+        processed_scenario = default_process_scenario(scenario)
         processed_scenarios.append(processed_scenario)
 
     return processed_scenarios
 
 
-class GroundTruthDataset:
+class SimulationDataset:
     def __init__(self,
                  scenario_list: List[dict],
+                 scenario_id: List[str] = None,
                  ):
         """
             Initializes the dataset.
@@ -71,16 +72,16 @@ class GroundTruthDataset:
             :param scenario_list: A list of dictionaries, each containing an scenario of simulation data.
             :param store_raw_data: If True, the original data will be stored in the object.
             """
-        # Process the scenarios
         self.scenarios = scenario_list
+        self.scenario_id = scenario_id
 
     @classmethod
     def load(cls, path):
         """
-        Loads a GroundTruthDataset object from a file.
+        Loads a SimulationDataset object from a file.
 
         :param path: Path to the file
-        :return: A GroundTruthDataset object
+        :return: A SimulationDataset object
         """
         with open(path, "rb") as file:
             instance = pickle.load(file)
@@ -90,58 +91,60 @@ class GroundTruthDataset:
     @classmethod
     def load_list(cls,
                   path_list,
-                  process=True,
-                  process_fun=process_scenario,
+                  remove_step_data=True,
                   parallel=True,
                   ):
         """
         Loads a list of datasets from a list of files.
 
         :param path_list: List of paths to the files
-        :return: A list of GroundTruthDataset objects
+        :return: A list of SimulationDataset objects
         """
-        worker = load_process_simulation_file if process else Simulator.load_simulation_data
-        if not parallel:
-            return cls([worker(path, process_fun) for path in path_list], False)
+        worker = load_and_process_simulation_file if remove_step_data else Simulator.load_simulation_data
+        worker_args = [(path, default_process_scenario) if remove_step_data else (path,) for path in path_list]
 
-        # Use multiprocessing to load datasets in parallel
-        n_processes = min(mp.cpu_count(), len(path_list))  # Don't create more processes than needed
+        if parallel:
+            # Use multiprocessing to load datasets in parallel
+            def update_progress(_):
+                """Callback function to update tqdm progress bar."""
+                pbar.update(1)
 
-        def update_progress(_):
-            """Callback function to update tqdm progress bar."""
-            pbar.update(1)
+            n_processes = min(mp.cpu_count(), len(path_list))
+            with mp.Pool(n_processes) as pool:
+                with tqdm.tqdm(total=len(path_list), desc="Loading GT data (parallel)") as pbar:
+                    # Use apply_async to allow progress bar updates
+                    results = [pool.apply_async(worker, args=args, callback=update_progress)
+                               for args in worker_args]
 
-        with mp.Pool(n_processes) as pool:
-            with tqdm.tqdm(total=len(path_list), desc="Loading GT data") as pbar:
-                # Use apply_async to allow progress bar updates
-                results = [pool.apply_async(worker, args=(path, process_fun), callback=update_progress)
-                           for path in path_list]
+                    # Collect results once all processes are done
+                    scenarios = [r.get() for r in results]  # Ensures tasks complete before returning
+        else:
+            # Load scenarios sequentially
+            scenarios = [worker(*args) for args in tqdm.tqdm(worker_args, desc="Loading GT data (sequentially)")]
 
-                # Collect results once all processes are done
-                scenarios = [r.get() for r in results]  # Ensures tasks complete before returning
+        # Add the ids to each scenario
+        ids = [path.stem for path in path_list]
+        for i, scenario in enumerate(scenarios):
+            scenario["id"] = ids[i]
 
-        return cls(scenarios, False)
+        return cls(scenarios, ids)
 
     @classmethod
     def from_folder(cls,
                     folder_path,
-                    process=True,
-                    process_fun=process_scenario,
-                    parallel=True,
-                    ):
+                    remove_step_data=True,
+                    parallel=True):
         """
         Loads a dataset from a folder containing multiple simulation files.
         The files must contain in the name 'simulation' and end with '.pkl'.
 
         :param folder_path: Path to the folder
+        :param remove_step_data: If True, the scenarios will be processed to remove step data
         :param parallel: If True, the datasets will be loaded in parallel
-        :return: A GroundTruthDataset object
+        :return: A SimulationDataset object
         """
-        # Get list of files
         files = [f for f in folder_path.iterdir() if f.is_file() and "simulation" in f.name and f.suffix == ".pkl"]
-
-        # Load scenarios
-        return cls.load_list(path_list=files, process=process, process_fun=process_fun, parallel=parallel)
+        return cls.load_list(path_list=files, remove_step_data=remove_step_data, parallel=parallel)
 
     def extract(self, n=1):
         """
@@ -172,37 +175,57 @@ class GroundTruthDataset:
         return batches
 
     def process_scenarios(self, process_fun):
-        for i, scenario in enumerate(self.scenarios):
-            noisy_scenario = process_fun(scenario)
-            self.scenarios[i] = noisy_scenario
+        """
+        Processes the scenarios in the dataset using the given function.
+        :param process_fun: Function to process the scenarios
+        :return: A SimulationDataset object with the processed scenarios
+        """
+        new_scenarios = []
+        for i, scenario in tqdm.tqdm(enumerate(self.scenarios),
+                                     total=len(self.scenarios),
+                                     desc="Processing scenarios"):
+            processed_scenario = process_fun(scenario)
+            new_scenarios.append(processed_scenario)
 
+        return SimulationDataset(new_scenarios, self.scenario_id)
+
+    def get_scenario_by_index(self, index):
+        """
+        Retrieves a scenario based on its index.
+
+        :param index: Index of the scenario to retrieve.
+        :return: The scenario at the specified index.
+        """
+        if index < 0 or index >= len(self.scenarios):
+            raise IndexError("Index out of range.")
+        return self.scenarios[index]
+
+    def get_scenario_by_id(self, scenario_id):
+        """
+        Retrieves a scenario based on its ID.
+
+        :param scenario_id: ID of the scenario to retrieve.
+        :return: The scenario with the specified ID.
+        """
+        if self.scenario_id is None:
+            raise ValueError("Scenario IDs are not available.")
+        if scenario_id not in self.scenario_id:
+            raise ValueError("Scenario ID not found.")
+        index = self.scenario_id.index(scenario_id)
+        return self.scenarios[index]
 
 """
 UTILITY FUNCTIONS
 """
 
 
-def load(path,
-         origin_folder=None,
-         parallel=True,
-         process_data=True,
-         process_fun=process_scenario,
-         skip_if_found=True,
-         ):
-    path = Path(path)
+def load(path):
+    try:
+        gt_data = SimulationDataset.load(path)
+        return gt_data
 
-    if path.exists() and skip_if_found:
-        gt_data = GroundTruthDataset.load(path)
-
-    elif origin_folder is not None:
-        gt_data = GroundTruthDataset.from_folder(origin_folder, process=process_data, parallel=parallel, process_fun=process_fun)
-        save(gt_data, path)
-        print(f"Ground truth data saved to {path}")
-
-    else:
+    except FileNotFoundError:
         raise FileNotFoundError("The file does not exist and no origin folder was provided.")
-
-    return gt_data
 
 
 def save(gt_data, path):

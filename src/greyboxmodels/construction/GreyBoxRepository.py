@@ -7,96 +7,8 @@ import copy
 from typing import List
 from itertools import product
 import numpy as np
-from scipy.integrate import simpson
 
 from greyboxmodels.modelbuild import Plant
-
-
-class BayesianNormalEstimator:
-    """
-    A Bayesian estimator for tracking the mean and standard deviation of normally distributed variables.
-
-    This class uses Bayesian updates to refine estimates of a normal distribution's parameters (mean & std deviation)
-    based on new independent and identically distributed (IID) normal observations.
-
-    Attributes:
-    - mu (np.ndarray): Estimated mean(s) of the normal distribution.
-    - sigma (np.ndarray): Estimated standard deviation(s).
-    - mu_history (list): Stores evolution of mean estimates over updates.
-    - sigma_history (list): Stores evolution of standard deviation estimates.
-
-    # TODO generalize to any estimator or model performance metric
-    """
-
-    def __init__(self,
-                 mu_prior,
-                 sigma_prior,
-                 ):
-        """
-        Initializes the Bayesian normal estimator with prior mean and standard deviation.
-
-        :param mu_prior: Prior mean (scalar or array for multiple variables).
-        :param sigma_prior: Prior standard deviation (same shape as mu_prior).
-        """
-        self.mu = mu_prior
-        self.sigma = sigma_prior
-
-        # Track history for visualization
-        self.mu_history = [self.mu]
-        self.sigma_history = [self.sigma]
-
-        # Track info history
-        self.info_history = []
-
-    def update(self, observations, info=None):
-        """
-        Performs a Bayesian update on the mean and standard deviation based on multiple observations of a single variable.
-
-        :param observations: 1D array of new observations (multiple samples of a single variable).
-        :param info: Optional metadata to store with update history.
-        """
-        observations = np.array(observations, dtype=np.float64)  # Ensure NumPy array
-        m = len(observations)  # Number of new samples
-
-        if m == 0:
-            return  # No update if no new data
-
-        # Compute sample mean and variance from new observations
-        mu_Y = np.mean(observations)
-        sigma_Y = np.std(observations, ddof=1)
-
-        # Convert to variance for computation
-        sigma_prior_sq = self.sigma ** 2
-        sigma_Y_sq = max(sigma_Y ** 2, 1e-8)  # Avoid zero variance issues
-
-
-        # Bayesian update formulas
-        sigma_new_sq = (1 / sigma_prior_sq + m / sigma_Y_sq) ** -1
-        mu_new = sigma_new_sq * (self.mu / sigma_prior_sq + m * mu_Y / sigma_Y_sq)
-
-        # Convert variance back to standard deviation
-        sigma_new = np.sqrt(sigma_new_sq)
-
-        # Update estimates
-        self.mu = mu_new
-        self.sigma = sigma_new
-
-        # Store history
-        self.mu_history.append(self.mu)
-        self.sigma_history.append(self.sigma)
-        self.info_history.append(info)
-
-    def get_mean_variance(self):
-        """
-        Returns the current mean and standard deviation estimates.
-        """
-        return self.mu, self.sigma
-
-    def get_history(self):
-        """
-        Returns the history of mean and standard deviation estimates over time.
-        """
-        return np.array(self.mu_history), np.array(self.sigma_history)
 
 
 class GreyBoxRepository:
@@ -108,7 +20,6 @@ class GreyBoxRepository:
         A class to enable handy use of a Grey-Box Model.
         :param reference_plant: Reference plant.
         :param bbm_plants: List of Black-Box Models.
-        :param risk_metric: Risk metric to use for lack of fit.
         """
         # Check if the number of plants in the reference model is equal to the number of plants in the BBM.
         assert len(reference_plant.plants) == len(
@@ -118,14 +29,42 @@ class GreyBoxRepository:
         self.reference_plant = reference_plant
         self.bbm_plants = bbm_plants
 
-        # Risk metric to use for lack of fit
-        # self.risk_metric = risk_metric    # TODO generalize
-        # self.risk_aggregation = risk_aggregation  # TODO generalize
-
         # Generate grey-box hierarchies
-        self.model_repository = self.generate_greybox_hierarchies()
+        self.model_repository = self.generate_greybox_models()
         self.model_performance = None
         self.reference_plan = list(self.model_repository.keys())[0]
+
+    def generate_greybox_models(self):
+        """
+        Generate all possible grey-box hierarchies based on substitution plans.
+        """
+        repo = {}  # Dictionary to store models
+        num_plants = len(self.reference_plant.plants)
+
+        # Generate all possible binary substitution plans (tuples of 0s and 1s)
+        all_plans = list(product([0, 1], repeat=num_plants))
+
+        for plan in all_plans:
+            # Create a new hierarchy from reference_plant
+            gbm = copy.deepcopy(self.reference_plant)  # Deepcopy to prevent modifying the original
+
+            # Modify the plants list based on the substitution plan
+            for idx, val in enumerate(plan):
+                if val == 1:  # Replace with BBM where plan[idx] is 1
+                    gbm.plants[idx] = self.bbm_plants[idx]
+
+            # Initialize metrics for computational load and fidelity
+            metrics = {
+                "computational_load": Metric(),
+                "fidelity": Metric()
+            }
+
+            # Store the model and its metrics using the substitution plan as the key
+            repo[tuple(plan)] = {"model": gbm,
+                                 "performance": metrics
+                                 }
+
+        return repo
 
     def prior_values(self,
                      simulation_data_list,
@@ -201,30 +140,6 @@ class GreyBoxRepository:
 
         return self.model_performance
 
-    def generate_greybox_hierarchies(self):
-        """
-        Generate all possible grey-box hierarchies based on substitution plans.
-        """
-        repo = {}  # Dictionary to store models
-        num_plants = len(self.reference_plant.plants)
-
-        # Generate all possible binary substitution plans (tuples of 0s and 1s)
-        all_plans = list(product([0, 1], repeat=num_plants))
-
-        for plan in all_plans:
-            # Create a new hierarchy from reference_plant
-            gbm = copy.deepcopy(self.reference_plant)  # Deepcopy to prevent modifying the original
-
-            # Modify the plants list based on the substitution plan
-            for idx, val in enumerate(plan):
-                if val == 1:  # Replace with BBM where plan[idx] is 1
-                    gbm.plants[idx] = self.bbm_plants[idx]
-
-            # Store the model using the substitution plan as the key
-            repo[tuple(plan)] = gbm  # Convert list to tuple to use as key
-
-        return repo
-
     def get_model(self, plan):
         """
         Get the model based on the substitution plan.
@@ -239,7 +154,7 @@ class GreyBoxRepository:
         Plant.HierarchicalPlant
             The Grey-Box Model based on the substitution plan.
         """
-        return self.model_repository[plan]
+        return self.model_repository[plan]["model"]
 
     def __len__(self):
         return len(self.model_repository)
@@ -333,196 +248,3 @@ class GreyBoxRepository:
         loss = mu1_scaled + mu2_scaled + w3 * np.sqrt(sigma1_scaled ** 2 + sigma2_scaled ** 2)
 
         return loss
-
-
-"""
-UTILITY FUNCTIONS
-"""
-
-
-def computational_load(sim_data_list):
-    """
-    Computes the computational load of each simulation data dictionary in the list.
-
-    :param sim_data_list: List of dictionaries with simulation data.
-    :return: The computational load of the simulation.
-    """
-
-    def slope_fit(t_sim, t_exec):
-        """
-        Fits the passed time array to a line y = mx and returns the slope m
-        :param t_sim: the simulation time array
-        :param t_exec: the execution time array
-        :return: the slope m
-        """
-        # Fit the simulation time array to a line
-        t_sim_col = t_sim[:, np.newaxis]
-        m, _, _, _ = np.linalg.lstsq(t_sim_col, t_exec, rcond=None)
-        return m[0]
-
-    results = []
-    info = []
-    for sim_data in sim_data_list:
-        # Get necessary data
-        t_sim = np.array(sim_data["time"])
-        t_exec = np.array(sim_data["execution_time_array"])
-        t_exec = t_exec - t_exec[0]
-        m = slope_fit(t_sim, t_exec)
-        results.append(m)
-        info.append({"t_sim": t_sim, "t_exec": t_exec, "slope": m})
-
-    return results, info
-
-
-def lack_of_fit(ref_sim_data_list,
-                sim_data_list,
-                risk_metric,
-                plant_ref,
-                plant_gbm,
-                ):
-    """
-    Computes the lack of fit between two simulation data dictionaries.
-
-    :param ref_sim_data_list: Reference simulation data dictionary.
-    :param sim_data_list: Simulation data dictionary.
-    :param risk_metric: Risk metric to use for lack of fit.
-    :param risk_aggregation: Risk aggregation function.
-    :param plant_ref: Reference plant.
-    :param plant_gbm: Grey-Box Model.
-    :return: The lack of fit between the two simulations.
-    """
-
-    def ks_statistic(data_ref, data, n_bins=10):
-        """
-        Compute the Kolmogorov-Smirnov statistic between two empirical cumulative distribution functions.
-        :param data: the data to compare
-        :param data_ref: the reference data
-        :param n_bins: the number of bins to use
-        """
-        # If both are the same, return 0
-        if np.array_equal(data_ref, data):
-            return 0, {"equal_data": True}
-
-        # Generate shared bin edges for both datasets
-        min_x = min(data.min(), data_ref.min())
-        max_x = max(data.max(), data_ref.max())
-        bins = np.linspace(min_x, max_x, n_bins + 1)
-
-        # Compute empirical PDFs
-        epdf_ref, _ = np.histogram(data_ref, bins=bins, density=True)
-        epdf, _ = np.histogram(data, bins=bins, density=True)
-
-        # Compute empirical CDFs
-        ecdf_ref = empirical_cdf(bins, epdf_ref)
-        ecdf = empirical_cdf(bins, epdf)
-
-        # Compute KS statistic
-        abs_diff = np.abs(ecdf - ecdf_ref)
-        ks_value = np.max(abs_diff)
-        max_diff_idx = np.argmax(abs_diff)
-        ks_loc = bins[max_diff_idx]
-
-        # Store information
-        info = {"ks_idx": max_diff_idx,
-                "ks_value": ks_value,
-                "ks_bin_loc": ks_loc,
-                "bins": bins,
-                "epdf": epdf,
-                "epdf_ref": epdf_ref,
-                "ecdf": ecdf,
-                "ecdf_ref": ecdf_ref,
-                "abs_diff": abs_diff,
-                }
-
-        return ks_value, info
-
-    def empirical_cdf(bin_edges, epdf):
-        """
-        Compute the empirical cumulative distribution function (ECDF) from an empirical PDF.
-
-        :param bin_edges: Bin edges from np.histogram (length n_bins + 1)
-        :param epdf: Empirical probability density function (length n_bins)
-        :return: ECDF values at each bin edge
-        """
-        # Compute cumulative sum of the PDF to get the ECDF
-        cdf_values = np.cumsum(epdf * np.diff(bin_edges))
-
-        # Normalize so that ECDF ranges from 0 to 1
-        cdf_values /= cdf_values[-1]  # Divide by last value to make it 1
-
-        # Prepend a 0 at the start to ensure ECDF starts at 0
-        cdf_values = np.concatenate(([0], cdf_values))
-
-        return cdf_values
-
-    def aggregate(t: np.ndarray, r: np.ndarray) -> float:
-        """
-        Aggregates the risk metric r using integration.
-        :param t: time points
-        :param r: risk metric values
-        :return: aggregated risk metric
-        """
-        return simpson(r, t)
-
-    def ensure_full_coverage_indices(N, Ns=3):
-        """
-        Ensures that in N random samplings of Ns elements, all elements are selected at least once.
-
-        :param N: Total number of elements.
-        :param Ns: Number of elements to sample in each iteration.
-        :return: List of sampled subsets (indices of the original list).
-        """
-        if Ns >= N:
-            raise ValueError("Ns must be smaller than the number of elements N.")
-
-        sampled_indices = []
-        remaining_indices = set(range(N))  # Track indices that haven't been included yet
-
-        for _ in range(N):
-            if len(remaining_indices) >= Ns:
-                # Preferentially sample from indices that haven't been included yet
-                sampled = np.random.choice(list(remaining_indices), size=Ns, replace=False)
-            else:
-                # Sample randomly while ensuring we include remaining unseen indices
-                needed = list(remaining_indices)
-                additional = np.random.choice(range(N), size=Ns - len(needed), replace=False)
-                sampled = np.array(needed + list(additional))
-
-            sampled_indices.append(sampled)
-            remaining_indices -= set(sampled)  # Remove newly covered indices
-
-            # Reset remaining elements if all have been covered
-            if not remaining_indices:
-                remaining_indices = set(range(N))
-
-        return sampled_indices
-
-    # Get the combinations
-    comb_idx = ensure_full_coverage_indices(len(ref_sim_data_list), Ns=3)
-
-    # Storage
-    ks_list = []
-    info_list = []
-    for idx in comb_idx:
-        # Use the index to get the target scenarios
-        s_ref = [ref_sim_data_list[i] for i in idx]
-        s = [sim_data_list[i] for i in idx]
-
-        # Compute the metric from each simulation
-        metric_ref = [risk_metric(ref_sim_data, plant_ref) for ref_sim_data in s_ref]
-        metric = [risk_metric(sim_data, plant_gbm) for sim_data in s]
-
-        # Aggregate the metric (one per simulation)
-        agg_metric_ref = [aggregate(x["time"], m) for x, m in zip(s_ref, metric_ref)]
-        agg_metric = [aggregate(x["time"], m) for x, m in zip(s, metric)]
-
-        # Turn into np array for KS computation
-        agg_metric_ref = np.array(agg_metric_ref)
-        agg_metric = np.array(agg_metric)
-
-        # Compute KS statistic for the aggregated metric
-        ks, info = ks_statistic(agg_metric_ref, agg_metric)
-        ks_list.append(ks)
-        info_list.append(info)
-
-    return ks_list, info_list
