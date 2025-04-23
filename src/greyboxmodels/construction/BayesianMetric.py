@@ -3,6 +3,12 @@ Set of tools to do Value of Information tasks.
 
 Author: Juan-Pablo Futalef
 """
+
+import numpy as np
+from scipy.stats import norm
+from typing import Iterable, Union
+
+
 class Metric:
     def __init__(self, value=None):
         """
@@ -30,168 +36,74 @@ class Metric:
 
 
 class BayesianNormalEstimator(Metric):
-    def __init__(self, mu_prior, sigma_prior):
-        """
-        Initializes the Bayesian normal estimator with prior mean and standard deviation.
+    """
+    Bayesian estimator following Lecture 5 Case 3 notation:
+    - mu0, n0: Normal prior parameters
+    - alpha0, beta0: Gamma prior on precision tau
+    Sequential updates use x observations.
+    """
 
-        :param mu_prior: Prior mean (scalar or array for multiple variables).
-        :param sigma_prior: Prior standard deviation (same shape as mu_prior).
-        """
+    def __init__(self,
+                 mu0: float,
+                 n0: float,
+                 alpha0: float,
+                 beta0: float):
         super().__init__()
-        self.mu = mu_prior
-        self.sigma = sigma_prior
+        # Initialize lecture-style hyperparameters
+        self.mu0 = mu0
+        self.n0 = n0
+        self.alpha0 = alpha0
+        self.beta0 = beta0
 
-        # Track history for visualization
-        self.mu_history = [self.mu]
-        self.sigma_history = [self.sigma]
+        # Track histories
+        self.mu_history = [mu0]
+        self.sigma_history = [self._current_sigma()]
 
-        # Track info history
-        self.info_history = []
+    def _current_sigma(self):
+        # E[sigma^2] = beta0/(alpha0 - 1) for alpha0>1
+        if self.alpha0 > 1:
+            return np.sqrt(self.beta0 / (self.alpha0 - 1))
+        return np.nan
 
-    def update(self, observations, info=None):
+    def update(self, z):
         """
-        Performs a Bayesian update on the mean and standard deviation based on multiple observations of a single variable.
+        Batch Bayesian update for n observations
 
-        :param observations: 1D array of new observations (multiple samples of a single variable).
-        :param info: Optional metadata to store with update history.
+        :param z: 1D array of observations of length n.
         """
-        observations = np.array(observations, dtype=np.float64)  # Ensure NumPy array
-        m = len(observations)  # Number of new samples
+        z = np.asarray(z, dtype=float)
+        n = z.size
+        if n == 0:
+            return  # nothing to update
 
-        if m == 0:
-            return  # No update if no new data
+        # Sample mean and sum of squares
+        x_bar = z.mean()
+        S = ((z - x_bar) ** 2).sum()
 
-        # Compute sample mean and variance from new observations
-        mu_Y = np.mean(observations)
-        sigma_Y = np.std(observations, ddof=1)
+        # Batch update
+        n_n = self.n0 + n
+        mu_n = (self.n0 * self.mu0 + n * x_bar) / n_n
+        alpha_n = self.alpha0 + n / 2
+        beta_n = (self.beta0 + 0.5 * S + (self.n0 * n) / (2 * n_n) * (x_bar - self.mu0) ** 2)
 
-        # Convert to variance for computation
-        sigma_prior_sq = self.sigma ** 2
-        sigma_Y_sq = max(sigma_Y ** 2, 1e-8)  # Avoid zero variance issues
+        # Assign posterior to new prior
+        self.mu0 = mu_n
+        self.n0 = n_n
+        self.alpha0 = alpha_n
+        self.beta0 = beta_n
 
-        # Bayesian update formulas
-        sigma_new_sq = (1 / sigma_prior_sq + m / sigma_Y_sq) ** -1
-        mu_new = sigma_new_sq * (self.mu / sigma_prior_sq + m * mu_Y / sigma_Y_sq)
-
-        # Convert variance back to standard deviation
-        sigma_new = np.sqrt(sigma_new_sq)
-
-        # Update estimates
-        self.mu = mu_new
-        self.sigma = sigma_new
-
-        # Store history
-        self.mu_history.append(self.mu)
-        self.sigma_history.append(self.sigma)
-        self.info_history.append(info)
+        # Record history
+        self.mu_history.append(self.mu0)
+        self.sigma_history.append(self._current_sigma())
 
     def get(self):
-        """
-        Returns the current mean estimate.
-
-        :return: The current mean estimate.
-        """
-        return self.mu
+        """Return current posterior mean mu_n."""
+        return self.mu0
 
     def get_mean_variance(self):
-        """
-        Returns the current mean and standard deviation estimates.
-        """
-        return self.mu, self.sigma
+        """Return (mu_n, sigma_n)."""
+        return self.mu0, self._current_sigma()
 
     def get_history(self):
-        """
-        Returns the history of mean and standard deviation estimates over time.
-        """
+        """Return arrays of mu and sigma history."""
         return np.array(self.mu_history), np.array(self.sigma_history)
-
-
-
-
-###
-def update_performance(self,
-                       plan,
-                       sim_data_list,
-                       gt_data_list,
-                       risk_metric,
-                       ):
-    """
-    Update the computational burden and fidelity performance metrics for a substitution plan.
-
-    :param plan: Substitution plan.
-    :param sim_data_list: List of cictionaries of simulation data
-    """
-    # Measure the properties to update them
-    z_l1, info_l1 = computational_load(sim_data_list)
-    z_l2, info_l1 = lack_of_fit(ref_sim_data_list=gt_data_list,
-                                sim_data_list=sim_data_list,
-                                risk_metric=risk_metric,
-                                plant_ref=self.reference_plant,
-                                plant_gbm=self.get_model(plan),
-                                )
-    self.model_performance[plan]["computational_load"].update(z_l1, info_l1)
-    self.model_performance[plan]["lack_of_fit"].update(z_l2, info_l1)
-
-def voi(self, loss_fun, **kwargs):
-    """
-    Computes Value of Information (VoI) for all substitution plans.
-    """
-    # Storage
-    voi_dict = {}
-
-    # Reference
-    ref_loss = loss_fun(self.reference_plan, **kwargs)
-    voi_dict[self.reference_plan] = {"loss": ref_loss, "voi": 0}
-
-    # Compute the loss
-    for plan in self.model_repository.keys():
-        if plan == self.reference_plan:
-            continue
-        loss = loss_fun(plan, **kwargs)
-        voi = ref_loss - loss
-        voi_dict[plan] = {"loss": loss, "voi": voi}
-
-    return voi_dict
-
-def plan_loss(self, plan, w1, w2):
-    """
-    Computes the model loss for a given plan.
-    """
-
-    # Get the performance data
-    l1_estimator = self.model_performance[plan]["computational_load"]
-    l2_estimator = self.model_performance[plan]["lack_of_fit"]
-
-    # Get the mean and standard deviation of the performance metrics
-    mu1, sigma1 = l1_estimator.get_mean_variance()
-    mu2, sigma2 = l2_estimator.get_mean_variance()
-
-    # Compute the loss
-    loss = w1 * mu1 + w2 * mu2
-
-    return loss
-
-def plan_loss_variance_penalized(self, plan, w1, w2, w3):
-    """
-    Computes the model loss for a given plan.
-    """
-    # Get the performance data
-    l1_estimator = self.model_performance[plan]["computational_load"]
-    l2_estimator = self.model_performance[plan]["lack_of_fit"]
-
-    # Get the mean and standard deviation of the performance metrics
-    mu1, sigma1 = l1_estimator.get_mean_variance()
-    mu2, sigma2 = l2_estimator.get_mean_variance()
-
-    # Scale the means
-    mu1_scaled = mu1 * w1  # Normalize computational burden
-    mu2_scaled = mu2 * w2  # Normalize fidelity
-
-    # Scale the standard deviations using the same transformation
-    sigma1_scaled = sigma1 * w1
-    sigma2_scaled = sigma2 * w2
-
-    # Compute the loss function
-    loss = mu1_scaled + mu2_scaled + w3 * np.sqrt(sigma1_scaled ** 2 + sigma2_scaled ** 2)
-
-    return loss

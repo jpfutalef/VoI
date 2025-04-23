@@ -70,7 +70,6 @@ class SimulationDataset:
             Initializes the dataset.
 
             :param scenario_list: A list of dictionaries, each containing an scenario of simulation data.
-            :param store_raw_data: If True, the original data will be stored in the object.
             """
         self.scenarios = scenario_list
         self.scenario_id = scenario_id

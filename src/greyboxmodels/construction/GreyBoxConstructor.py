@@ -1,31 +1,15 @@
-#!/usr/bin/env python3
 """
-Module: greybox_model_constructor.py
-Description:
-    Optimized implementation of a GreyBoxModelConstructor class that iteratively constructs and optimizes greybox models.
-    This version unifies simulation routines for parallel/sequential processing and offloads loss computation 
-    to a separate module (loss.py). Functions that are used in parallel processing are defined at module level 
-    to ensure picklability.
+A class that implements different approaches for selecting the best GBM alternatives.
+In general, simulations are cached in the disk and then, whenever needed, reused to reduce computational burden of
+experiments.
 
-Usage:
-    # Construct a GreyBox model
-    from greybox_model_constructor import GreyBoxModelConstructor
-    from greyboxmodels.construction.GreyBoxRepository import GreyBoxRepository
-    import greyboxmodels.construction.SimulationDataset as SimulationDataset
-
-    # (Initialize your repository, ground truth data, and risk metric appropriately)
-    repository = GreyBoxRepository(...)
-    gt_data = SimulationDataset.SimulationDataset(...)
-    risk_metric = lambda sim_data, plant: ...  # Your risk metric function
-
-    constructor = GreyBoxModelConstructor(repository, gt_data, risk_metric, work_dir="path/to/work_dir")
-    best_plan, performance = constructor.construct(method="exhaustive_numerical")
+Author: Juan-Pablo Futalef
 """
 
 import copy
 import os
 import random
-from typing import Union
+from typing import Union, Dict
 
 import numpy as np
 import pandas as pd
@@ -38,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 # Import simulation components from your package:
 from greyboxmodels.construction.GreyBoxRepository import GreyBoxRepository
 import greyboxmodels.construction.SimulationDataset as SimulationDataset
+from greyboxmodels.construction import BayesianMetric
 from greyboxmodels.simulation import Simulator
 from greyboxmodels.modelbuild import Input
 from greyboxmodels.modelbuild.Plant import Plant
@@ -69,8 +54,8 @@ def computational_load(sim_data_list):
         results.append(m)
         info.append({"t_sim": t_sim, "t_exec": t_exec, "slope": m})
 
-    mean_result = np.mean(results)
-    variance_result = np.var(results)
+    mean_result = np.mean(results, dtype=np.float64)
+    variance_result = np.var(results, dtype=np.float64)
     info_dict = {"mean": mean_result, "variance": variance_result, "details": info}
     return (mean_result, variance_result), info_dict
 
@@ -123,50 +108,36 @@ def lack_of_fit(ref_sim_data_list, sim_data_list, risk_metric, plant_ref, plant_
     return (mean_result, variance_result), info_dict
 
 
-def loss(scenarios: list,
-         ref_scenarios: list,
-         model: Plant,
-         ref_model: Plant,
-         risk_metric: callable,
+def loss(mu_L1,
+         mu_L2,
+         sigma_L1=0.0,
+         sigma_L2=0.0,
          w1=0.5,
          w2=0.5,
          lambda1=1.0,
          lambda2=1.0,
-         add_sigma=True,
          ):
     """
     Compute the loss for a given substitution plan.
 
-    :param scenarios: SimulationDataset object containing simulated scenarios.
-    :param ref_scenarios: SimulationDataset object containing reference scenarios.
-    :param model: Grey-box model instance.
-    :param ref_model: Reference model instance.
-    :param risk_metric: Callable risk metric function.
-    :param w1: Weight for computational load.
-    :param w2: Weight for lack of fit.
-    :param lambda1: Scaling factor for computational load.
-    :param lambda2: Scaling factor for lack of fit.
-    :param add_sigma: If true, add sigma when computational load.
-    :return: Tuple (loss, info_dict)
+    :param mu_L1: Mean computational load for the plan.
+    :param mu_L2: Mean fidelity for the plan.
+    :param sigma_L1: Variance associated with the computational load.
+    :param sigma_L2: Variance associated with the fidelity.
+    :param w1: Weight factor for the computational load component.
+    :param w2: Weight factor for the lack of fit component.
+    :param lambda1: Scaling factor for the computational load.
+    :param lambda2: Scaling factor for the lack of fit.
+    :param add_sigma: Boolean flag indicating whether to include sigma in the loss computation.
+    :return: The computed loss value.
     """
-    # Compute the individual losses
-    (mu_L1, sigma_L1), info_l1 = computational_load(scenarios)
-    (mu_L2, sigma_L2), info_l2 = lack_of_fit(ref_scenarios, scenarios, risk_metric, ref_model, model)
-
-    # Store results in a dict
-    info = {"computational_load_info": info_l1,
-            "lack_of_fit_info": info_l2,
-            "mu_l1": mu_L1, "sigma_l1": sigma_L1,
-            "mu_l2": mu_L2, "sigma_l2": sigma_L2,
-            }
-
     # Obtain the main loss
     mu_L = w1 * lambda1 * mu_L1 + w2 * lambda2 * mu_L2
-    sigma_L = np.sqrt((lambda1 * sigma_L1) ** 2 + (lambda2 * sigma_L2) ** 2) if add_sigma else 0.
+    sigma_L = np.sqrt((lambda1 * sigma_L1) ** 2 + (lambda2 * sigma_L2) ** 2)
 
     L = mu_L + sigma_L
 
-    return L, info
+    return L
 
 
 # -----------------------------------------------------------------------------
@@ -210,61 +181,100 @@ def simulate_scenario(scenario, model, substitution_plan, position):
         return None
 
 
-def simulate_scenarios_for_plan(plan, scenarios, repository, parallel=True, pbar_offset=0):
+def simulate_plan(plan, scenarios, repository, work_dir, parallel=True, pbar_offset=0):
     """
-    Simulates all scenarios for a given substitution plan.
+    Simulates all scenarios for a given substitution plan with caching.
 
     :param plan: The substitution plan identifier.
     :param scenarios: List of scenario dictionaries.
     :param repository: Repository instance providing the grey-box model.
+    :param work_dir: Working directory path for caching simulation results.
     :param parallel: Boolean flag to run scenario simulations in parallel.
     :param pbar_offset: Offset for progress bar positioning.
-    :return: List of simulation results.
-    """
-    model = repository.get_model(plan)
-    model.stochastic = False  # Ensure deterministic simulation
-    results = []
-    if parallel:
-        with ThreadPoolExecutor() as executor:
-            futures = []
-            for i, scenario in enumerate(scenarios):
-                model_copy = copy.deepcopy(model)
-                futures.append(executor.submit(simulate_scenario, scenario, model_copy, plan, pbar_offset + i + 1))
-            results = [future.result() for future in
-                       tqdm.tqdm(futures, desc="Simulating scenarios", position=pbar_offset)]
-
-    else:
-        for i, scenario in enumerate(tqdm.tqdm(scenarios, desc="Simulating scenarios", position=pbar_offset)):
-            result = simulate_scenario(scenario, model, plan, pbar_offset + i + 1)
-            results.append(result)
-
-    return results
-
-
-def simulate_plan_worker(args):
-    """
-    Worker function for multiprocessing. Simulates scenarios for a given plan,
-    handling caching of results.
-    
-    :param args: Tuple containing (plan, scenarios, repository, work_dir, parallel flag)
     :return: Tuple (plan, simulation results)
     """
-
-    # Unpack arguments
-    plan, scenarios, repository, work_dir, parallel = args
-
-    # Check if the simulation results are already cached
     simulation_path = work_dir / "simulations" / plan_filename(plan)
+    available_simulations = []
     try:
+        # Check if the simulation results are already cached
         with open(simulation_path, "rb") as f:
-            plan_simulations = pickle.load(f)
-    except FileNotFoundError:
-        plan_simulations = simulate_scenarios_for_plan(plan, scenarios, repository, parallel=parallel)
-        with open(simulation_path, "wb") as f:
-            pickle.dump(plan_simulations, f)
+            cached_simulations = pickle.load(f)
 
-    # Return the plan and its simulation results
+        # Extend the available simulations with the cached ones
+        available_simulations.extend(cached_simulations.scenarios)
+
+        # If so, check the scenarios that are already cached
+        cached_ids = {sim["id"] for sim in cached_simulations.scenarios}
+
+        # Store the scenarios that are not cached for later simulations
+        pending_scenarios = [sc for sc in scenarios if sc["id"] not in cached_ids]
+
+    except FileNotFoundError:
+        # Simulate all scenarios if the file is not found
+        pending_scenarios = scenarios
+
+    if pending_scenarios:
+        # Simulate all pending scenarios
+        model = repository.get_model(plan)
+        model.stochastic = False  # Ensure deterministic simulation
+        results = []
+        if parallel:
+            with ThreadPoolExecutor() as executor:
+                futures = []
+                for i, scenario in enumerate(pending_scenarios):
+                    model_copy = copy.deepcopy(model)
+                    futures.append(executor.submit(simulate_scenario, scenario, model_copy, plan, pbar_offset + i + 1))
+                results = [future.result() for future in
+                           tqdm.tqdm(futures, desc="Simulating scenarios", position=pbar_offset)]
+        else:
+            for i, scenario in enumerate(
+                    tqdm.tqdm(pending_scenarios, desc="Simulating scenarios", position=pbar_offset)):
+                result = simulate_scenario(scenario, model, plan, pbar_offset + i + 1)
+                results.append(result)
+
+        # Extend the available simulations with the new results
+        available_simulations.extend(results)
+
+        # Turn into a SimulationDataset
+        available_simulations = SimulationDataset.SimulationDataset(available_simulations)
+
+        # Save the new simulations to the cache
+        with open(simulation_path, "wb") as f:
+            pickle.dump(available_simulations, f)
+
+    # Create the output by retrieving from the available simulations the ids of the scenarios
+    requested_scenarios = {sc["id"] for sc in scenarios}
+    plan_simulations = [sim for sim in available_simulations if sim["id"] in requested_scenarios]
+    plan_simulations = SimulationDataset.SimulationDataset(plan_simulations)
+
     return plan, plan_simulations
+
+
+def simulate_several_plans(plans, ref_scenarios, repository, work_dir, parallel_plans, parallel_scenarios):
+    """
+    Simulates several substitution plans to some reference scenarios.
+
+    :param plans: List of substitution plans to evaluate.
+    :param ref_scenarios: List of reference scenarios.
+    :param repository: Instance of GreyBoxRepository for model retrieval.
+    :param work_dir: Path to the working directory for storing simulation results.
+    :param parallel_plans: Boolean flag to enable parallel execution of plan simulations.
+    :param parallel_scenarios: Boolean flag to enable parallel execution of scenario simulations within each plan.
+    :return: Dictionary mapping each substitution plan to its corresponding simulation results.
+    """
+    simulation_results = {}
+    if parallel_plans:
+        args_list = []
+        for plan in plans:
+            args_list.append((plan, ref_scenarios, repository, work_dir, parallel_scenarios))
+        with mp.Pool(processes=mp.cpu_count()) as pool:
+            results = pool.starmap(simulate_plan, args_list)
+        simulation_results = {plan: sim_data for plan, sim_data in results}
+    else:
+        for plan in plans:
+            plan, sim_data = simulate_plan(plan, ref_scenarios, repository, work_dir, parallel=parallel_scenarios)
+            simulation_results[plan] = sim_data
+    return simulation_results
 
 
 def total_execution_time(simulation_results):
@@ -330,8 +340,6 @@ class GreyBoxModelConstructor:
         self._w2 = w2
         self._lambda1 = lambda1
         self._lambda2 = lambda2
-        self._s0 = None  # Initial substitution plan (if provided externally)
-        self.gt_batch_size = 10  # Default ground truth batch size
 
     def construct(self, method="exhaustive_numerical", save_in=None, **kwargs):
         """
@@ -344,7 +352,7 @@ class GreyBoxModelConstructor:
         """
         methods = {
             "exhaustive_numerical": self._exhaustive_optimizer,
-            "pseudo_random_heuristic": self._pseudo_random_heuristic,
+            "voi_driven": self._pseudo_random_heuristic,
         }
         try:
             optimizer = methods[method]
@@ -362,7 +370,12 @@ class GreyBoxModelConstructor:
 
         return best_plan, info
 
-    def _exhaustive_optimizer(self, n_scenarios=None, parallel_plans=True, parallel_scenarios=True, plans=None):
+    def _exhaustive_optimizer(self,
+                              n_scenarios=None,
+                              parallel_plans=True,
+                              parallel_scenarios=True,
+                              plans=None,
+                              ):
         """
         Exhaustively simulates substitution plans and selects the one with the highest VoI.
         
@@ -372,11 +385,14 @@ class GreyBoxModelConstructor:
         :param plans: List of substitution plans to evaluate (None uses all available plans).
         :return: Tuple (best_plan, performance metrics dictionary)
         """
+        """
+        INITIALIZATION
+        """
         # Create necessary directories
         os.makedirs(self.work_dir, exist_ok=True)  # Main working directory
         os.makedirs(self.work_dir / "simulations", exist_ok=True)  # Directory for simulation results
 
-        # Extract scenarios if n_scenarios is specified
+        # Get references
         ref_scenarios = self.gt_data.extract(n_scenarios) if n_scenarios is not None else self.gt_data.scenarios
         ref_model = self.repository.get_model(self._ref_plan)
 
@@ -384,24 +400,12 @@ class GreyBoxModelConstructor:
         if plans is None:
             plans = self.substitution_plans
 
-        # Get the plan names
-        plan_names = [self._plan_names[plan] for plan in plans]
-
-        # Parallelize plan simulation if requested.
-        if parallel_plans:
-            args_list = []
-            for plan in plans:
-                args_list.append((plan, ref_scenarios, self.repository, self.work_dir, parallel_scenarios))
-            with mp.Pool(processes=mp.cpu_count()) as pool:
-                results = pool.map(simulate_plan_worker, args_list)
-            simulation_results = {plan: sim_data for plan, sim_data in results}
-
-        else:
-            simulation_results = {}
-            for plan in plans:
-                args = (plan, ref_scenarios, self.repository, self.work_dir, parallel_scenarios)
-                plan, sim_data = simulate_plan_worker(args)
-                simulation_results[plan] = sim_data
+        """
+        SIMULATION OF ALL PLANS AND SCENARIOS
+        """
+        # Simulate the scenarios (THIS IS THE EXPENSIVE PART!!)
+        simulation_results = simulate_several_plans(plans, ref_scenarios, self.repository, self.work_dir,
+                                                    parallel_plans, parallel_scenarios)
 
         # Compute the execution times and create a dataframe to store results.
         total_exec_time = total_execution_time(simulation_results)
@@ -414,62 +418,83 @@ class GreyBoxModelConstructor:
         sim_params_df = pd.DataFrame.from_dict(sim_params, orient="index", columns=["value"])
         sim_params_df.to_csv(self.work_dir / "simulations" / "summary.csv")
 
-        # Compute the loss of the reference plan
-        loss_ref, loss_ref_info = loss(simulation_results[self._ref_plan].scenarios,
-                                       ref_scenarios,
-                                       ref_model,
-                                       ref_model,
-                                       self._risk_metric,
-                                       w1=self._w1,
-                                       w2=self._w2,
-                                       lambda1=self._lambda1,
-                                       lambda2=self._lambda2,
-                                       add_sigma=False,
-                                       )
+        """
+        COMPUTATION OF LOSSESS AND VOI
+        """
+        # Storage for results
+        loss_dict = {}
+        voi_dict = {}
+
+        # Compute losses for the reference plan
+        (mean_l1, var_l1), loss_info_l1 = computational_load(simulation_results[self._ref_plan].scenarios)
+        (mean_l2, var_l2), loss_info_l2 = lack_of_fit(ref_scenarios,
+                                                      simulation_results[self._ref_plan].scenarios,
+                                                      self._risk_metric,
+                                                      ref_model,
+                                                      ref_model,
+                                                      )
+        loss_ref = loss(mean_l1,
+                        mean_l2,
+                        sigma_L1=var_l1,
+                        sigma_L2=var_l2,
+                        w1=self._w1,
+                        w2=self._w2,
+                        lambda1=self._lambda1,
+                        lambda2=self._lambda2,
+                        )
+
+        # Store the ref loss information
+        loss_dict["ref"] = {"mu_l1": mean_l1,
+                            "sigma_l1": var_l1,
+                            "mu_l2": mean_l2,
+                            "sigma_l2": var_l2,
+                            "loss": loss_ref,
+                            }
 
         # Evaluate performance of each plan to compute actual VoI
-        voi_dict = {}
-        loss_dict = {}
         for plan in plans:
             # Get scenarios and model
             scenarios = simulation_results[plan].scenarios
             model = self.repository.get_model(plan)
 
             # Compute the loss for those scenarios
-            loss_plan, loss_info = loss(scenarios,
-                                        ref_scenarios,
-                                        model,
-                                        ref_model,
-                                        self._risk_metric,
-                                        w1=self._w1,
-                                        w2=self._w2,
-                                        lambda1=self._lambda1,
-                                        lambda2=self._lambda2,
-                                        add_sigma=False,
-                                        )
+            (mean_l1, var_l1), loss_info_l1 = computational_load(scenarios)
+            (mean_l2, var_l2), loss_info_l2 = lack_of_fit(ref_scenarios,
+                                                          scenarios,
+                                                          self._risk_metric,
+                                                          ref_model,
+                                                          model,
+                                                          )
+            # Compute the loss for the reference plan
+            loss_plan = loss(mean_l1,
+                             mean_l2,
+                             sigma_L1=var_l1,
+                             sigma_L2=var_l2,
+                             w1=self._w1,
+                             w2=self._w2,
+                             lambda1=self._lambda1,
+                             lambda2=self._lambda2,
+                             )
             voi = loss_ref - loss_plan
+
+            # Store the information
+            loss_dict[plan] = {
+                "mu_l1": mean_l1,
+                "sigma_l1": var_l1,
+                "mu_l2": mean_l2,
+                "sigma_l2": var_l2,
+                "loss": loss_plan,
+            }
             voi_dict[plan] = voi
 
-            # Store the loss information
-            loss_dict[plan] = {"loss": loss_plan, }
-            loss_dict[plan].update(loss_info)
-            del loss_dict[plan]['computational_load_info']
-            del loss_dict[plan]['lack_of_fit_info']
-
         # Create a dataframe to store the results
-        voi_df = pd.DataFrame.from_dict(voi_dict, orient="index")
-        voi_df.index = plan_names
-        voi_df.to_csv(self.work_dir / "voi_summary.csv")
-
-        # Store the loss information
-        loss_dict["ref"] = {"loss": loss_ref}
-        loss_dict["ref"].update(loss_ref_info)
-        del loss_dict["ref"]['computational_load_info']
-        del loss_dict["ref"]['lack_of_fit_info']
-
         loss_df = pd.DataFrame.from_dict(loss_dict, orient="index")
-        loss_df.index = plan_names + ["ref"]
+        loss_df.index = loss_df.index.map(lambda x: self._plan_names.get(x, x))
         loss_df.to_csv(self.work_dir / "loss_summary.csv")
+
+        voi_df = pd.DataFrame.from_dict(voi_dict, orient="index")
+        voi_df.index = voi_df.index.map(lambda x: self._plan_names.get(x, x))
+        voi_df.to_csv(self.work_dir / "voi_summary.csv")
 
         # Return the best plan and performance information
         best_plan = max(voi_dict, key=lambda p: voi_dict[p])
@@ -479,9 +504,12 @@ class GreyBoxModelConstructor:
         return best_plan, info
 
     def _pseudo_random_heuristic(self,
+                                 prior_l1: Dict[tuple, tuple],
+                                 prior_l2: Dict[tuple, tuple],
                                  n_out=3,
                                  n_batch=5,
-                                 save_in=None,
+                                 parallel_scenarios=False,
+                                 plans=None,
                                  ):
         """
         Uses a pseudo-random greedy heuristic to select the next substitution plan.
@@ -491,65 +519,197 @@ class GreyBoxModelConstructor:
         :param save_in: Path to save temporary results/history.
         :return: Tuple (best_plan, performance info)
         """
+
+        def next_plan_heuristic(l1_repo, l2_repo, out_plans, n_out):
+            # Get prior values
+            return
+
+        """
+        INITIALIZE PROCEDURE
+        """
         # Create necessary directories
         os.makedirs(self.work_dir, exist_ok=True)  # Main working directory
         os.makedirs(self.work_dir / "simulations", exist_ok=True)  # Directory for simulation results
 
-        performance = {"method": "pseudo_random_heuristic"}
-        self._prior_num_scenarios = 50
-        self._prior_batch_size = 10
-        batches = self.gt_data.get_batches(self.gt_batch_size)
-        plan_history = []
-        current_plan = self._s0 if self._s0 is not None else self._next_substitution_plan_heuristic(plan_history,
-                                                                                                    n_out)
-        for batch in tqdm.tqdm(batches, desc="Simulating batches"):
-            gbm_batch = simulate_scenarios_for_plan(current_plan, batch, self.repository, parallel=True)
-            self.repository.update_performance(plan=current_plan,
-                                               sim_data_list=gbm_batch,
-                                               gt_data_list=batch,
-                                               risk_metric=self._risk_metric)
-            plan_history.append(current_plan)
-            current_plan = self._next_substitution_plan_heuristic(plan_history, n_out)
-            if save_in is not None:
-                history = self._get_history()
-                history["plan_history"] = plan_history
-                temp_path = Path(save_in) / f"_temp_history_pseudo_random.pkl"
-                with open(temp_path, "wb") as f:
-                    pickle.dump(history, f)
+        # If no specific plans are provided, use all available plans for the construction
+        if plans is None:
+            plans = self.substitution_plans
 
-        voi = plan_loss(self.repository, w1=self._w1, w2=self._w2)
-        best_plan = max(voi, key=lambda p: voi[p]["voi"])
-        performance["best_plan"] = best_plan
-        performance["last_voi"] = voi
-        performance["history"] = self._get_history()
-        if save_in is not None:
-            result_path = Path(save_in) / f"pseudo_random_heuristic_results.pkl"
-            with open(result_path, "wb") as f:
-                pickle.dump(performance, f)
-            print(f"Saved results in: {result_path}")
-        return best_plan, performance
+        # Remove reference plan from the list of plans
+        plans.remove(self._ref_plan)
 
-    def _next_substitution_plan_heuristic(self, plan_history, n_prev_plans):
+        # metadata of the procedure
+        metadata = {"parallel_scenarios": parallel_scenarios,
+                    "n_out": n_out,
+                    "n_batch": n_batch,
+                    "method": "pseudo_random_heuristic",
+                    "w1": self._w1,
+                    "w2": self._w2,
+                    "lambda1": self._lambda1,
+                    "lambda2": self._lambda2,
+                    "prior_l1": prior_l1,
+                    "prior_l2": prior_l2,
+                    }
+
         """
-        Selects the next substitution plan, excluding recently used ones.
-        
-        :param plan_history: List of previously selected plans.
-        :param n_prev_plans: Number of recent plans to exclude.
-        :return: Next substitution plan.
+        PRIOR ESTIMATIONS
         """
-        if self._s0 is None:
-            valid_plans = [p for p in self.substitution_plans if p]
-            return random.choice(valid_plans)
-        last_plans = plan_history[-n_prev_plans:] if len(plan_history) > n_prev_plans else plan_history
-        voi = plan_loss_variance_penalized(self._ref_plan, self.repository, w1=self._w1, w2=1.0)
-        eligible = {p: v for p, v in voi.items() if p not in last_plans}
-        if not eligible:
-            return random.choice(self.substitution_plans)
-        voi_values = np.array([v["voi"] for v in eligible.values()])
-        exp_voi = np.exp(voi_values - np.max(voi_values))
-        probabilities = exp_voi / np.sum(exp_voi)
-        selected_plan = random.choices(population=list(eligible.keys()), weights=probabilities, k=1)[0]
-        return selected_plan
+        Estimator = BayesianMetric.BayesianNormalEstimator
+        l1_estimator_repo = {plan: Estimator(*prior_l1[plan]) for plan in plans}
+        l2_estimator_repo = {plan: Estimator(*prior_l2[plan]) for plan in plans}
+
+        """
+        REFERENCE LOSS
+        """
+        # Compute losses for the reference plan
+        (mean_l1, var_l1), loss_info_l1 = computational_load(self.gt_data.scenarios)
+        (mean_l2, var_l2), loss_info_l2 = lack_of_fit(self.gt_data.scenarios,
+                                                      self.gt_data.scenarios,
+                                                      self._risk_metric,
+                                                      self.repository.get_model(self._ref_plan),
+                                                      self.repository.get_model(self._ref_plan),
+                                                      )
+        loss_ref = loss(mean_l1,
+                        mean_l2,
+                        sigma_L1=var_l1,
+                        sigma_L2=var_l2,
+                        w1=self._w1,
+                        w2=self._w2,
+                        lambda1=self._lambda1,
+                        lambda2=self._lambda2,
+                        )
+
+        # Store the ref loss information
+        metadata["ref_loss"] = {"mu_l1": mean_l1,
+                                "sigma_l1": var_l1,
+                                "mu_l2": mean_l2,
+                                "sigma_l2": var_l2,
+                                "loss": loss_ref,
+                                }
+
+        """
+        GET BATCHES
+        """
+        batches = self.gt_data.get_batches(n_batch)
+
+        """
+        MAIN PROCEDURE
+        """
+        out_plans = {}  # A container for the plans temporarily out of the game
+        selection_info = {"losses": {plan: [] for plan in plans},
+                          "voi": {plan: [] for plan in plans},
+                          "chosen_plan": [],
+                          "out_plans": [],
+                          }
+
+        for k, batch in enumerate(tqdm.tqdm(batches, desc="Simulating batches")):
+            # Store out plans
+            selection_info["out_plans"].append(copy.deepcopy(out_plans))
+
+            # Compute priori VoI
+            prior_voi = {}
+            for plan in plans:
+                # Compute elements
+                l1_mean, l1_var = l1_estimator_repo[plan].get_mean_variance()
+                l2_mean, l2_var = l2_estimator_repo[plan].get_mean_variance()
+                l = loss(l1_mean, l2_mean, l1_var, l2_var, self._w1, self._w2, self._lambda1, self._lambda2, )
+                voi = loss_ref - l
+
+                # Store
+                loss_dict = {
+                    "mu_l1": l1_mean,
+                    "sigma_l1": l1_var,
+                    "mu_l2": l2_mean,
+                    "sigma_l2": l2_var,
+                    "loss": l,
+                }
+                selection_info["losses"][plan].append(loss_dict)
+                selection_info["voi"][plan].append(voi)
+
+                if plan in out_plans:
+                    # Skip plans that are temporarily out of the game
+                    continue
+
+                prior_voi[plan] = voi
+
+            # Create selection probabilities as roulette wheel using VoI
+            voi_array = np.array(list(prior_voi.values()))
+            off_voi_array = voi_array - np.min(voi_array)
+            sum_voi = np.sum(off_voi_array)
+            probabilities = off_voi_array / sum_voi
+
+            # Select the next plan based on the probabilities
+            current_plan = random.choices(population=list(prior_voi.keys()), weights=probabilities, k=1)[0]
+
+            # Store
+            selection_info["chosen_plan"].append(current_plan)
+
+            # Simulate the batch
+            plan, sim_data = simulate_plan(current_plan, batch, self.repository, self.work_dir, parallel_scenarios)
+
+            # Collect evidence from the simulations
+
+            (mean_l1, var_l1), loss_info_l1 = computational_load(sim_data.scenarios)
+            (mean_l2, var_l2), loss_info_l2 = lack_of_fit(batch,
+                                                          sim_data.scenarios,
+                                                          self._risk_metric,
+                                                          self.repository.get_model(current_plan),
+                                                          self.repository.get_model(self._ref_plan),
+                                                          )
+
+            # Update computational with collected evidence
+            l1_evidence = [x['slope'] for x in loss_info_l1['details']]
+            l1_estimator_repo[current_plan].update(l1_evidence)
+
+            # Update lack of fit with collected evidence
+            l2_evidence = loss_info_l2['ks_value']
+            l2_estimator_repo[current_plan].update(l2_evidence)
+
+            # Update the out_plans container
+            for plan in list(out_plans.keys()):
+                out_plans[plan] -= 1
+                if out_plans[plan] <= 0:
+                    del out_plans[plan]
+
+                    # Include the current plan in the out_plans container
+            out_plans[current_plan] = n_out
+
+        # Compute voi using the last updates
+        post_voi = {}
+        for plan in plans:
+            # Compute elements
+            l1_mean, l1_var = l1_estimator_repo[plan].get_mean_variance()
+            l2_mean, l2_var = l2_estimator_repo[plan].get_mean_variance()
+            l = loss(l1_mean, l2_mean, l1_var, l2_var, self._w1, self._w2, self._lambda1, self._lambda2, )
+            voi = loss_ref - l
+
+            post_voi[plan] = voi
+
+        # Store the final VoI
+        selection_info["final_voi_values"] = post_voi
+
+        # Store the selection information in the metadata
+        metadata["selection_info"] = selection_info
+
+        # Save the metadata to a file
+        metadata_path = self.work_dir / "procedure_details.pkl"
+        with open(metadata_path, "wb") as f:
+            pickle.dump(metadata, f)
+
+        # Save selection information
+        selection_info_path = self.work_dir / "selection_details.pkl"
+        with open(selection_info_path, "wb") as f:
+            pickle.dump(selection_info, f)
+
+        # Create a dataframe of the final results
+        final_voi_df = pd.DataFrame.from_dict(post_voi, orient="index", columns=["final_voi"])
+        final_voi_df.index = final_voi_df.index.map(lambda x: self._plan_names.get(x, x))
+        final_voi_df.to_csv(self.work_dir / "final_voi_summary.csv")
+
+        # Get the best plan
+        best_plan = max(post_voi, key=lambda p: post_voi[p])
+
+        return best_plan, metadata
 
     def _get_history(self):
         """
