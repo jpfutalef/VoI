@@ -334,6 +334,7 @@ class GreyBoxModelConstructor:
         self._ref_plan = ref_plan if ref_plan is not None else self.substitution_plans[0]
         self._risk_metric = risk_metric
         self._plan_names = {s: f"s_{i}" for i, s in enumerate(self.substitution_plans)}
+        self._best_model = None
 
         # Default weights and lambda values (these are now embedded in the loss functions)
         self._w1 = w1
@@ -519,11 +520,6 @@ class GreyBoxModelConstructor:
         :param save_in: Path to save temporary results/history.
         :return: Tuple (best_plan, performance info)
         """
-
-        def next_plan_heuristic(l1_repo, l2_repo, out_plans, n_out):
-            # Get prior values
-            return
-
         """
         INITIALIZE PROCEDURE
         """
@@ -549,6 +545,8 @@ class GreyBoxModelConstructor:
                     "lambda2": self._lambda2,
                     "prior_l1": prior_l1,
                     "prior_l2": prior_l2,
+                    "ref_plan": self._ref_plan,
+                    "plans_in_game": plans,
                     }
 
         """
@@ -709,6 +707,9 @@ class GreyBoxModelConstructor:
         # Get the best plan
         best_plan = max(post_voi, key=lambda p: post_voi[p])
 
+        # Store the best model
+        self._best_model = self.repository.get_model(best_plan)
+
         return best_plan, metadata
 
     def _get_history(self):
@@ -728,7 +729,7 @@ class GreyBoxModelConstructor:
         (Stub) Return the best model based on performance criteria.
         Extend this as needed.
         """
-        return None
+        return self._best_model
 
     def get_history(self):
         """
