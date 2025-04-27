@@ -9,6 +9,7 @@ Author: Juan-Pablo Futalef
 import copy
 import os
 import random
+import time
 from typing import Union, Dict
 
 import numpy as np
@@ -18,6 +19,7 @@ import dill as pickle
 import tqdm
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
+from itertools import cycle
 
 # Import simulation components from your package:
 from greyboxmodels.construction.GreyBoxRepository import GreyBoxRepository
@@ -74,7 +76,8 @@ def lack_of_fit(ref_sim_data_list, sim_data_list, risk_metric, plant_ref, plant_
 
     def ks_statistic(data_ref, data, n_bins=20):
         if np.array_equal(data_ref, data):
-            return 0, {"equal_data": True}
+            return 0, {"equal_data": True,
+                       "ks_value": 0}
         min_x = min(data.min(), data_ref.min())
         max_x = max(data.max(), data_ref.max())
         bins = np.linspace(min_x, max_x, n_bins + 1)
@@ -511,6 +514,7 @@ class GreyBoxModelConstructor:
                                  n_batch=5,
                                  parallel_scenarios=False,
                                  plans=None,
+                                 k_end=50,
                                  ):
         """
         Uses a pseudo-random greedy heuristic to select the next substitution plan.
@@ -523,6 +527,9 @@ class GreyBoxModelConstructor:
         """
         INITIALIZE PROCEDURE
         """
+        procedure_timer = 0.
+        prev_timer_flag = time.time()
+
         # Create necessary directories
         os.makedirs(self.work_dir, exist_ok=True)  # Main working directory
         os.makedirs(self.work_dir / "simulations", exist_ok=True)  # Directory for simulation results
@@ -643,10 +650,15 @@ class GreyBoxModelConstructor:
             selection_info["chosen_plan"].append(current_plan)
 
             # Simulate the batch
+            procedure_timer += time.time() - prev_timer_flag
+
             plan, sim_data = simulate_plan(current_plan, batch, self.repository, self.work_dir, parallel_scenarios)
 
-            # Collect evidence from the simulations
+            sim_exec_time = sum([x['total_execution_time'] for x in sim_data.scenarios])
+            procedure_timer += sim_exec_time
+            prev_timer_flag = time.time()
 
+            # Collect evidence from the simulations
             (mean_l1, var_l1), loss_info_l1 = computational_load(sim_data.scenarios)
             (mean_l2, var_l2), loss_info_l2 = lack_of_fit(batch,
                                                           sim_data.scenarios,
@@ -689,16 +701,6 @@ class GreyBoxModelConstructor:
         # Store the selection information in the metadata
         metadata["selection_info"] = selection_info
 
-        # Save the metadata to a file
-        metadata_path = self.work_dir / "procedure_details.pkl"
-        with open(metadata_path, "wb") as f:
-            pickle.dump(metadata, f)
-
-        # Save selection information
-        selection_info_path = self.work_dir / "selection_details.pkl"
-        with open(selection_info_path, "wb") as f:
-            pickle.dump(selection_info, f)
-
         # Create a dataframe of the final results
         final_voi_df = pd.DataFrame.from_dict(post_voi, orient="index", columns=["final_voi"])
         final_voi_df.index = final_voi_df.index.map(lambda x: self._plan_names.get(x, x))
@@ -709,6 +711,23 @@ class GreyBoxModelConstructor:
 
         # Store the best model
         self._best_model = self.repository.get_model(best_plan)
+
+        # Include in metadata
+        metadata["best_plan"] = best_plan
+
+        # Execution time
+        procedure_timer += time.time() - prev_timer_flag
+        metadata["total_execution_time"] = procedure_timer
+
+        # Save the metadata to a file
+        metadata_path = self.work_dir / "procedure_details.pkl"
+        with open(metadata_path, "wb") as f:
+            pickle.dump(metadata, f)
+
+        # Save selection information
+        selection_info_path = self.work_dir / "selection_details.pkl"
+        with open(selection_info_path, "wb") as f:
+            pickle.dump(selection_info, f)
 
         return best_plan, metadata
 
