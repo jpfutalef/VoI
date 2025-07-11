@@ -74,6 +74,12 @@ class SimulationDataset:
         self.scenarios = scenario_list
         self.scenario_id = scenario_id
 
+    def __repr__(self):
+        """
+        Returns a string representation of the dataset.
+        """
+        return f"SimulationDataset with {len(self.scenarios)} scenarios"
+
     @classmethod
     def load(cls, path):
         """
@@ -206,12 +212,20 @@ class SimulationDataset:
         :param scenario_id: ID of the scenario to retrieve.
         :return: The scenario with the specified ID.
         """
-        if self.scenario_id is None:
-            raise ValueError("Scenario IDs are not available.")
-        if scenario_id not in self.scenario_id:
-            raise ValueError("Scenario ID not found.")
-        index = self.scenario_id.index(scenario_id)
-        return self.scenarios[index]
+        # Find the scenario with the given ID
+        for scenario in self.scenarios:
+            if scenario.get("id") == scenario_id:
+                return scenario
+        return None
+
+    def filter_scenarios(self, filter_fun):
+        """
+        Filters the scenarios in the dataset using the given function.
+        :param filter_fun: Function to filter the scenarios
+        :return: A SimulationDataset object with the filtered scenarios
+        """
+        filtered_scenarios = [s for s in self.scenarios if filter_fun(s)]
+        return SimulationDataset(filtered_scenarios, self.scenario_id)
 
 """
 UTILITY FUNCTIONS

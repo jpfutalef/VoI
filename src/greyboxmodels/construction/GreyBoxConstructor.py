@@ -99,7 +99,8 @@ def lack_of_fit(ref_sim_data_list, sim_data_list, risk_metric, plant_ref, plant_
         return np.concatenate(([0], cdf_values))
 
     def aggregate(t, r):
-        return np.sum(r) / len(r)
+        # Integration
+        return np.trapz(r, t)
 
     metric_ref = [risk_metric(ref, plant_ref) for ref in ref_sim_data_list]
     metric = [risk_metric(sim, plant_gbm) for sim in sim_data_list]
@@ -314,6 +315,7 @@ class GreyBoxModelConstructor:
                  gt_data: SimulationDataset.SimulationDataset,
                  risk_metric: callable,
                  work_dir: Union[Path, str],
+                 plan_names: Dict[tuple, str] = None,
                  ref_plan=None,
                  w1: float = 0.5,
                  w2: float = 0.5,
@@ -336,7 +338,7 @@ class GreyBoxModelConstructor:
         self.substitution_plans = list(self.repository.model_repository.keys())
         self._ref_plan = ref_plan if ref_plan is not None else self.substitution_plans[0]
         self._risk_metric = risk_metric
-        self._plan_names = {s: f"s_{i}" for i, s in enumerate(self.substitution_plans)}
+        self._plan_names = {s: f"F_{i}" for i, s in enumerate(self.substitution_plans)} if plan_names is None else plan_names
         self._best_model = None
 
         # Default weights and lambda values (these are now embedded in the loss functions)
