@@ -4,81 +4,59 @@ This module enables using a CPS Grey-Box Model based on a substitution plan.
 Author: Juan-Pablo Futalef
 """
 import copy
-from typing import List
+from typing import List, Dict, Tuple
 from itertools import product
-import numpy as np
-
 from greyboxmodels.modelbuild import Plant
 
+# Type alias for clarity
+Repository = Dict[Tuple[int, ...], Plant.HierarchicalPlant]
 
-class GreyBoxRepository:
-    def __init__(self,
-                 reference_plant: Plant.HierarchicalPlant,
-                 bbm_plants: List[Plant.Plant],
-                 ):
-        """
-        A class to enable handy use of a Grey-Box Model.
-        :param reference_plant: Reference plant.
-        :param bbm_plants: List of Black-Box Models.
-        """
-        # Check if the number of plants in the reference model is equal to the number of plants in the BBM.
-        assert len(reference_plant.plants) == len(
-            bbm_plants), "Number of plants in the reference model must be equal to the number of plants in the BBM."
+def generate_greybox_repository(
+        reference_plant: Plant.HierarchicalPlant,
+        bbm_plants: List[Plant.Plant],
+) -> Repository:
+    """
+    Generates a dictionary of Grey-Box Models based on all possible substitution plans.
 
-        # This plant inherits the properties of the reference plant.
-        self.reference_plant = reference_plant
-        self.bbm_plants = bbm_plants
+    Args:
+        reference_plant (Plant.HierarchicalPlant): The baseline White-Box/Reference plant.
+        bbm_plants (List[Plant.Plant]): A list of Black-Box Models to substitute into the reference.
 
-        # Generate grey-box hierarchies
-        self.model_repository = self.generate_greybox_models()
-        self.model_performance = None
-        self.reference_plan = list(self.model_repository.keys())[0]
+    Returns:
+        Dict[Tuple[int, ...], Plant.HierarchicalPlant]: A dictionary where:
+            - Keys are tuples representing the substitution plan (e.g., (0, 1, 0)).
+            - Values are the resulting HierarchicalPlant objects (the GBMs).
 
-    def generate_greybox_models(self):
-        """
-        Generate all possible grey-box hierarchies based on substitution plans.
-        """
-        repo = {}  # Dictionary to store models
-        num_plants = len(self.reference_plant.plants)
+    Raises:
+        ValueError: If the number of sub-plants in the reference does not match the BBM list.
+    """
 
-        # Generate all possible binary substitution plans (tuples of 0s and 1s)
-        all_plans = list(product([0, 1], repeat=num_plants))
+    # 1. Validation
+    if len(reference_plant.plants) != len(bbm_plants):
+        raise ValueError(
+            f"Mismatch: Reference model has {len(reference_plant.plants)} plants, "
+            f"but {len(bbm_plants)} BBMs were provided."
+        )
 
-        for plan in all_plans:
-            # Create a new hierarchy from reference_plant
-            gbm = copy.deepcopy(self.reference_plant)  # Deepcopy to prevent modifying the original
+    repo = {}
+    num_plants = len(reference_plant.plants)
 
-            # Modify the plants list based on the substitution plan
-            for idx, val in enumerate(plan):
-                if val == 1:  # Replace with BBM where plan[idx] is 1
-                    gbm.plants[idx] = self.bbm_plants[idx]
+    # 2. Generate all binary substitution plans (0=Reference, 1=BBM)
+    # Result example: [(0,0), (0,1), (1,0), (1,1)]
+    all_plans = list(product([0, 1], repeat=num_plants))
 
-            # Store the model and its metrics using the substitution plan as the key
-            repo[tuple(plan)] = {"model": gbm,
-                                 }
+    # 3. Build models for each plan
+    for plan in all_plans:
+        # Deepcopy the reference to ensure we don't mutate the original input
+        gbm = copy.deepcopy(reference_plant)
 
-        return repo
+        # Iterate through the plan logic
+        for idx, use_bbm in enumerate(plan):
+            if use_bbm == 1:
+                # Substitute the White-Box component with the Black-Box Model
+                gbm.plants[idx] = bbm_plants[idx]
 
-    def get_model(self, plan):
-        """
-        Get the model based on the substitution plan.
+        # Map the plan tuple directly to the model object
+        repo[tuple(plan)] = gbm
 
-        Parameters
-        ----------
-        plan : tuple
-            Substitution plan to get the model.
-
-        Returns
-        -------
-        Plant.HierarchicalPlant
-            The Grey-Box Model based on the substitution plan.
-        """
-        return self.model_repository[plan]["model"]
-
-    def __len__(self):
-        return len(self.model_repository)
-
-    def num_of_plants(self):
-        return len(self.reference_plant.plants)
-
-
+    return repo

@@ -36,13 +36,6 @@ class Metric:
 
 
 class BayesianNormalEstimator(Metric):
-    """
-    Bayesian estimator following Lecture 5 Case 3 notation:
-    - mu0, n0: Normal prior parameters
-    - alpha0, beta0: Gamma prior on precision tau
-    Sequential updates use x observations.
-    """
-
     def __init__(self,
                  mu0: float,
                  n0: float,

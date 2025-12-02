@@ -64,7 +64,7 @@ def process_scenarios(scenario_list):
 class SimulationDataset:
     def __init__(self,
                  scenario_list: List[dict],
-                 scenario_id: List[str] = None,
+                 scenario_id: List[str],
                  ):
         """
             Initializes the dataset.
@@ -227,6 +227,82 @@ class SimulationDataset:
         filtered_scenarios = [s for s in self.scenarios if filter_fun(s)]
         return SimulationDataset(filtered_scenarios, self.scenario_id)
 
+    def GTBatches(self, risk_metric, plant, batch_size, accident_probability):
+        """
+        Splits the dataset into batches of a given size, ensuring a specific proportion of accident scenarios
+        via oversampling.
+        """
+        import random
+        from math import ceil
+        from greyboxmodels.construction.Loss import aggregate_risk as ar
+
+        # 1. Compute Metrics+
+        metric = {sid: risk_metric(sim, plant) for sid, sim in zip(self.scenario_id, self.scenarios)}
+        agg_metric = {sid: ar(sim["time"], metric[sid]) for sid, sim in zip(self.scenario_id, self.scenarios)}
+
+        # 2. Classify Scenarios
+        accident_scenarios = []
+        non_accident_scenarios = []
+
+        accident_scenarios_ids = []
+        non_accident_scenarios_ids = []
+
+        for sid, sim in zip(self.scenario_id, self.scenarios):
+            # We store tuple (id, sim) to keep track if needed, or just sim
+            if agg_metric[sid] > 0:
+                accident_scenarios.append(sim)
+                accident_scenarios_ids.append(sid)
+            else:
+                non_accident_scenarios.append(sim)
+                non_accident_scenarios_ids.append(sid)
+
+        classification_result = {"accident": accident_scenarios_ids, "non_accident": non_accident_scenarios_ids}
+
+        # 3. Define batches' composition
+        n_acc_per_batch = int(ceil(batch_size * accident_probability))
+        n_norm_per_batch = batch_size - n_acc_per_batch
+
+        total_scenarios = len(self.scenarios)
+        n_batches = int(ceil(total_scenarios / batch_size))
+
+        # 4. Helper for Oversampling (Infinite Cyclic Iterator)
+        def infinite_sampler(data_list):
+            if not data_list:
+                return
+            # Create a local copy to shuffle without affecting original
+            pool = data_list[:]
+            while True:
+                random.shuffle(pool)
+                for item in pool:
+                    yield item
+
+        # Create generators
+        # Note: If no accidents exist but probability > 0, this will hang or error.
+        if not accident_scenarios and n_acc_per_batch > 0:
+            print("Warning: No accidents found to satisfy accident_probability.")
+            # Fallback: treat everything as normal
+            acc_gen = infinite_sampler(non_accident_scenarios)
+        else:
+            acc_gen = infinite_sampler(accident_scenarios)
+
+        norm_gen = infinite_sampler(non_accident_scenarios)
+
+        # 5. Construct Batches
+        batches = []
+        for _ in range(n_batches):
+            batch_data = []
+
+            # Fill required accidents (oversampling if needed via generator)
+            for _ in range(n_acc_per_batch):
+                batch_data.append(next(acc_gen))
+
+            # Fill remainder with normal scenarios
+            for _ in range(n_norm_per_batch):
+                batch_data.append(next(norm_gen))
+
+            batches.append(batch_data)
+
+        return batches, classification_result
 """
 UTILITY FUNCTIONS
 """
