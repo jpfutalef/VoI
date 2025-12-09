@@ -75,3 +75,15 @@ def lack_of_fit(ref_scenario_list, scenario_list, risk_metric, ref_plant, gbm_pl
     ks, info_dict = ks_statistic(agg_metric_ref, agg_metric)
     evidence = ks
     return evidence, info_dict
+
+def aggregated_loss_risk(Fi, Theta, w1, w2, lambda1, lambda2):
+    mu1, sigma1 = Theta[Fi][0]
+    mu2, sigma2 = Theta[Fi][1]
+    loss = w1 * lambda1(mu1) + w2 * lambda2(mu2) + np.sqrt(lambda1(sigma1) ** 2 + lambda2(sigma2) ** 2)
+    return loss
+
+def aggregated_loss_expected(Fi, Theta, w1, w2, lambda1, lambda2):
+    mu1, sigma1 = Theta[Fi][0]
+    mu2, sigma2 = Theta[Fi][1]
+    loss = w1 * lambda1(mu1) + w2 * lambda2(mu2)
+    return loss
