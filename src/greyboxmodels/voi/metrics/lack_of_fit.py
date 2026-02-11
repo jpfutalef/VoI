@@ -21,6 +21,9 @@ def ks_statistic(data, data_ref, n_bins=50):
     :param data_ref: the reference data
     :param n_bins: the number of bins to use
     """
+    # Ensure the data are numpy arrays
+    data = np.array(data)
+    data_ref = np.array(data_ref)
 
     # Check if the array contains the same values
     n_min = min(len(data), len(data_ref))
