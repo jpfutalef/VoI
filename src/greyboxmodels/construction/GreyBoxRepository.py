@@ -11,6 +11,7 @@ from greyboxmodels.modelbuild import Plant
 # Type alias for clarity
 Repository = Dict[Tuple[int, ...], Plant.HierarchicalPlant]
 
+
 def generate_greybox_repository(
         reference_plant: Plant.HierarchicalPlant,
         bbm_plants: List[Plant.Plant],
